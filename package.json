@@ -1,0 +1,22 @@
+{
+  "name": "sahyog-delivery",
+  "version": "1.0.0",
+  "description": "Sahyog Medical Delivery App",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Vedang Soni",
+  "license": "ISC",
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^4.19.2",
+    "googleapis": "^164.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.4.0",
+    "web-push": "^3.6.7"
+  }
+}
