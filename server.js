@@ -311,7 +311,7 @@ app.use(express.static(path.join(__dirname)));
 
 // --- 6. HTML Page Routes --- (No changes)
 //app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
-//app.get('/track', (req, res) => res.sendFile(path.join(__dirname, 'track.html')));
+//---app.get('/track', (req, res) => res.sendFile(path.join(__dirname, 'track.html')));
 //app.get('/login', (req, res) => res.sendFile(path.join(__dirname, 'login.html')));
 //app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
 //app.get('/delivery', (req, res) => res.sendFile(path.join(__dirname, 'delivery.html')));
@@ -733,6 +733,34 @@ app.post('/admin/sync-to-google-sheet', auth(['admin']), async (req, res) => {
     }
 });
 
+app.get('/manager/assigned-pickups', auth(['manager']), async (req, res) => {
+  try {
+    const pickups = await Delivery.find({
+      assignedByManager: req.user.userId,
+      assignedTo: null
+    }).sort({ createdAt: -1 });
+
+    res.json(pickups);
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to load pickups' });
+  }
+});
+
+app.get('/manager/all-pending-deliveries', auth(['manager']), async (req, res) => {
+  try {
+    const deliveries = await Delivery.find({
+      assignedByManager: req.user.userId,
+      'statusUpdates.status': { $ne: 'Delivered' }
+    })
+    .populate('assignedTo', 'name')
+    .sort({ createdAt: -1 });
+
+    res.json(deliveries);
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to load pending deliveries' });
+  }
+});
+
 // --- 8. Manager API Routes ---
 
 // 8.1. Manager: Get Pickups assigned (No changes)
@@ -752,13 +780,20 @@ app.get('/manager/assigned-pickups', auth(['manager']), async (req, res) => {
 
 // 8.2. Manager: Get Delivery Boys (No changes)
 app.get('/manager/my-boys', auth(['manager']), async (req, res) => {
-    try {
-        const users = await User.find({ role: 'delivery', createdByManager: req.user.userId }, 'name email _id isActive phone');
-        res.json(users);
-    } catch (error) {
-         console.error("Fetch My Boys Error:", error);
-         res.status(500).json({ message: 'Error fetching delivery boys' });
-    }
+  try {
+    const boys = await User.find({
+  role: 'delivery',
+  isActive: true,
+  $or: [
+    { createdByManager: req.user.userId }, // Manager-created
+    { createdByManager: null }              // Admin-created
+  ]
+}).select('-password');
+
+    res.json(boys);
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to load delivery boys' });
+  }
 });
 
 // 8.3. Manager: Create Delivery Boy (No changes)
@@ -781,6 +816,33 @@ app.post('/manager/create-delivery-boy', auth(['manager']), async (req, res) => 
              res.status(500).json({ message: 'Server error', error: error.message });
          }
     }
+});
+
+// Manager can update ONLY delivery boys created under him
+app.put('/manager/user/:userId', auth(['manager']), async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { name, email, phone, password, isActive } = req.body;
+
+        const boy = await User.findOne({ _id: userId, createdByManager: req.user.userId });
+
+        if (!boy) return res.status(403).json({ message: "Not allowed. This delivery boy is not under you." });
+
+        if (name) boy.name = name;
+        if (email) boy.email = email.toLowerCase();
+        if (phone) boy.phone = phone;
+        if (typeof isActive !== "undefined") boy.isActive = isActive;
+
+        if (password && password.trim() !== "") {
+            boy.password = await bcrypt.hash(password, 10);
+        }
+
+        await boy.save();
+        res.json({ message: "Delivery boy updated successfully!" });
+
+    } catch (e) {
+        res.status(500).json({ message: "Update Failed", error: e.message });
+    }
 });
 
 // 8.4. Manager: Assign Delivery to Boy
@@ -945,5 +1007,4 @@ async function initialSetup() {
     try { const defaultSettings = await BusinessSettings.findOne(); if (!defaultSettings) { await BusinessSettings.create({}); console.log('Default business settings created.'); } }
     catch (e) { console.error('Default settings check/create error:', e); }
 }
-
 setTimeout(initialSetup, 5000);
