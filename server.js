@@ -87,7 +87,9 @@ const deliverySchema = new mongoose.Schema({
     assignedByManager: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, // Manager ID
     assignedBoyDetails: { name: String, phone: String },
     statusUpdates: [{ status: String, timestamp: { type: Date, default: Date.now } }],
-    codPaymentStatus: { type: String, enum: ['Pending', 'Paid - Cash', 'Paid - Online', 'Not Applicable'], default: 'Pending' }
+    codPaymentStatus: { type: String, enum: ['Pending', 'Paid - Cash', 'Paid - Online', 'Not Applicable'], default: 'Pending' },
+    completedAt: { type: Date, default: null },
+    assignedAt: { type: Date, default: null }
 }, { timestamps: true });
 
 deliverySchema.virtual('currentStatus').get(function() {
@@ -458,6 +460,7 @@ app.get('/delivery/completed-deliveries', auth(['delivery']), async(req,res)=>{
     const list = await Delivery.find({
         assignedTo:req.user.userId,
         statusUpdates:{ $elemMatch:{status:'Delivered'} }
+
     });
     res.json(list);
 });
@@ -466,6 +469,7 @@ app.get('/delivery/completed', auth(['delivery']), async(req,res)=>{
     const deliveries = await Delivery.find({
         assignedTo:req.user.userId,
         statusUpdates:{ $elemMatch:{ status:'Delivered'} }
+
     });
     res.json(deliveries);
 });
@@ -968,7 +972,8 @@ app.post('/delivery/complete', auth(['delivery']), async (req, res) => {
         const { trackingId, otp, paymentReceivedMethod } = req.body; const delivery = await Delivery.findOne({ trackingId: trackingId, assignedTo: req.user.userId });
         if (!delivery) return res.status(404).json({ message: 'ID not found/assigned' }); if (delivery.currentStatus !== 'Out for Delivery') return res.status(400).json({ message: `Status is ${delivery.currentStatus}.` }); if (delivery.otp !== otp) return res.status(400).json({ message: 'Invalid OTP!' });
         if (delivery.paymentMethod === 'COD') { if (!paymentReceivedMethod) return res.status(400).json({ message: 'Select payment method' }); delivery.codPaymentStatus = (paymentReceivedMethod === 'cash') ? 'Paid - Cash' : 'Paid - Online'; } else { delivery.codPaymentStatus = 'Not Applicable'; }
-        delivery.statusUpdates.push({ status: 'Delivered' }); 
+        delivery.statusUpdates.push({ status: 'Delivered', timestamp: new Date() });
+        delivery.completedAt = new Date();
         await delivery.save(); 
         
         // --- AUTO-SYNC (UPDATE) ---
