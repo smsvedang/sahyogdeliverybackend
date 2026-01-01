@@ -403,28 +403,71 @@ app.get('/admin/managers', auth(['admin']), async (req, res) => {
 
 // 7.4. Create User (No changes)
 app.post('/admin/create-user', auth(['admin']), async (req, res) => {
-    try {
-        const { name, email, password, phone, role } = req.body;
-        if (!name || !email || !password || !role || !['admin', 'manager', 'delivery'].includes(role)) {
-            return res.status(400).json({ message: 'Valid Name, Email, Password, Role required' });
-        }
-        const lowerCaseEmail = email.toLowerCase();
-        const existingUser = await User.findOne({ email: lowerCaseEmail });
-        if (existingUser) {
-            return res.status(409).json({ message: 'Email already exists' });
-        }
-        const hashedPassword = await bcrypt.hash(password, 10); 
-        const newUser = new User({ name, email: lowerCaseEmail, password: hashedPassword, phone, role, createdByManager: null });
-        await newUser.save();
-        res.status(201).json({ message: `${role} user created!`, user: { _id: newUser._id, name: newUser.name, email: newUser.email, role: newUser.role } });
-    } catch (error) {
-         console.error("Create User Error:", error);
-         if (error.code === 11000) { 
-             res.status(409).json({ message: 'Email already exists (DB constraint).' });
-         } else {
-             res.status(500).json({ message: 'Server error during user creation', error: error.message });
-         }
-    }
+        const { name,email,password,phone,role,managerId } = req.body;
+
+if(role==="delivery" && !managerId){
+    return res.status(400).json({ message:"Manager required for delivery boy" });
+}
+    
+const hashedPassword = await bcrypt.hash(password,10);
+
+const newUser = new User({
+    name,email:email.toLowerCase(),password:hashedPassword,
+    phone,role,
+    createdByManager: role==="delivery" ? managerId : null
+});
+
+try {
+    await newUser.save();
+    res.status(201).json({ message: 'User created successfully!' });
+} catch (error) {
+    console.error("Create User Error:", error);
+    if (error.code === 11000) {
+        res.status(409).json({ message: 'Email already exists.' });
+    } else {
+        res.status(500).json({ message: 'Server error creating user', error: error.message });
+    }
+}
+});
+
+app.get('/manager/pending', auth(['manager']), async(req,res)=>{
+    const deliveries = await Delivery.find({
+        assignedByManager:req.user.userId,
+        statusUpdates:{ $not:{ $elemMatch:{ status:'Delivered' }}}
+    }).populate('assignedTo','name');
+    res.json(deliveries);
+});
+
+app.get('/manager/completed', auth(['manager']), async(req,res)=>{
+    const deliveries = await Delivery.find({
+        assignedByManager:req.user.userId,
+        statusUpdates:{ $elemMatch:{ status:'Delivered' }}
+    }).populate('assignedTo','name');
+    res.json(deliveries);
+});
+
+app.get('/manager/completed-deliveries', auth(['manager']), async(req,res)=>{
+    const list = await Delivery.find({
+        assignedByManager:req.user.userId,
+        statusUpdates:{ $elemMatch:{status:'Delivered'} }
+    }).populate('assignedTo','name');
+    res.json(list);
+});
+
+app.get('/delivery/completed-deliveries', auth(['delivery']), async(req,res)=>{
+    const list = await Delivery.find({
+        assignedTo:req.user.userId,
+        statusUpdates:{ $elemMatch:{status:'Delivered'} }
+    });
+    res.json(list);
+});
+
+app.get('/delivery/completed', auth(['delivery']), async(req,res)=>{
+    const deliveries = await Delivery.find({
+        assignedTo:req.user.userId,
+        statusUpdates:{ $elemMatch:{ status:'Delivered'} }
+    });
+    res.json(deliveries);
 });
 
 // 7.5. Update User Details (No changes)
@@ -779,22 +822,14 @@ app.get('/manager/assigned-pickups', auth(['manager']), async (req, res) => {
 });
 
 // 8.2. Manager: Get Delivery Boys (No changes)
-app.get('/manager/my-boys', auth(['manager']), async (req, res) => {
-  try {
-    const boys = await User.find({
-  role: 'delivery',
-  isActive: true,
-  $or: [
-    { createdByManager: req.user.userId }, // Manager-created
-    { createdByManager: null }              // Admin-created
-  ]
-}).select('-password');
-
+app.get('/manager/my-boys', auth(['manager']), async (req,res)=>{
+    const boys = await User.find({ 
+        role:'delivery',
+        createdByManager:req.user.userId 
+    }).select('-password');
     res.json(boys);
-  } catch (err) {
-    res.status(500).json({ message: 'Failed to load delivery boys' });
-  }
 });
+
 
 // 8.3. Manager: Create Delivery Boy (No changes)
 app.post('/manager/create-delivery-boy', auth(['manager']), async (req, res) => {
