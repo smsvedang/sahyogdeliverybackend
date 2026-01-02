@@ -380,7 +380,7 @@ app.get('/admin/deliveries', auth(['admin']), async (req, res) => {
 app.get('/admin/users', auth(['admin']), async (req, res) => {
     try {
         const users = await User.find({}, '-password') 
-                          .populate('createdByManager', 'name')
+                          .populate('createdByManager', '_id name')
                           .sort({ role: 1, name: 1 });
         res.json(users);
     } catch (error) {
@@ -478,9 +478,12 @@ app.get('/delivery/completed', auth(['delivery']), async(req,res)=>{
 app.put('/admin/user/:userId', auth(['admin']), async (req, res) => {
     try {
         const { userId } = req.params;
-        const { name, email, phone, role } = req.body;
+        const { name, email, phone, role, managerId } = req.body;
         if (!name || !email || !role || !['admin', 'manager', 'delivery'].includes(role)) {
              return res.status(400).json({ message: 'Valid Name, Email, Role required' });
+        }
+        if (role === 'delivery' && !managerId) {
+            return res.status(400).json({ message: 'Manager required for delivery boy' });
         }
         const user = await User.findById(userId);
         if (!user) {
@@ -490,6 +493,7 @@ app.put('/admin/user/:userId', auth(['admin']), async (req, res) => {
         user.email = email.toLowerCase();
         user.phone = phone;
         user.role = role;
+        user.createdByManager = role === 'delivery' ? managerId : null;
         await user.save();
         res.json({ message: 'User updated successfully' });
     } catch (error) {
