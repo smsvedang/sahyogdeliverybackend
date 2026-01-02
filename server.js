@@ -997,14 +997,16 @@ app.post('/subscribe', auth(['delivery']), async (req, res) => {
 // 10.1. Track
 app.get('/track/:trackingId', async (req, res) => {
     try {
-        let tid = req.params.trackingId;
+        const inputTid = req.params.trackingId;
 
-        // Agar customer ne dash ke bina dala ho
-        if (!tid.includes('-') && tid.startsWith('SAHYOG')) {
-            tid = tid.replace('SAHYOG', 'SAHYOG-');
+        // 1️⃣ Try exact match first (NEW IDs: SAHYOG123456)
+        let delivery = await Delivery.findOne({ trackingId: inputTid });
+
+        // 2️⃣ If not found, try OLD format (SAHYOG-123456)
+        if (!delivery && inputTid.startsWith('SAHYOG') && !inputTid.includes('-')) {
+            const oldTid = inputTid.replace('SAHYOG', 'SAHYOG-');
+            delivery = await Delivery.findOne({ trackingId: oldTid });
         }
-
-        const delivery = await Delivery.findOne({ trackingId: tid });
 
         if (!delivery) {
             return res.status(404).json({ message: 'Tracking ID not found' });
@@ -1012,6 +1014,7 @@ app.get('/track/:trackingId', async (req, res) => {
 
         res.json(delivery);
     } catch (err) {
+        console.error("Track Error:", err);
         res.status(500).json({ message: 'Server error' });
     }
 });
@@ -1067,4 +1070,5 @@ async function initialSetup() {
     catch (e) { console.error('Default settings check/create error:', e); }
 }
 setTimeout(initialSetup, 5000);
+
 
