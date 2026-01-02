@@ -334,7 +334,7 @@ app.post('/book', auth(['admin']), async (req, res) => {
              return res.status(400).json({ message: 'Customer Name and Address are required.' });
         }
         const otp = Math.floor(1000 + Math.random() * 9000).toString();
-        const trackingId = 'SAHYOG-' + Date.now().toString().slice(-6);
+        const trackingId = 'SAHYOG' + Date.now().toString().slice(-6);
 
         const newDelivery = new Delivery({
             customerName: name, customerAddress: address, customerPhone: phone,
@@ -996,11 +996,26 @@ app.post('/subscribe', auth(['delivery']), async (req, res) => {
 // --- 10. Public API Routes --- (No changes)
 // 10.1. Track
 app.get('/track/:trackingId', async (req, res) => {
-    try { const delivery = await Delivery.findOne({ trackingId: req.params.trackingId }).populate('assignedTo', 'name phone'); if (!delivery) return res.status(404).json({ message: 'ID not found' });
-        let boyDetails = delivery.assignedBoyDetails; if (delivery.assignedTo && delivery.assignedTo.name) { boyDetails = { name: delivery.assignedTo.name, phone: delivery.assignedTo.phone }; }
-        res.json({ trackingId: delivery.trackingId, customerName: delivery.customerName, statusUpdates: delivery.statusUpdates, paymentMethod: delivery.paymentMethod, billAmount: delivery.billAmount, currentStatus: delivery.currentStatus, assignedBoyDetails: boyDetails });
-    } catch (error) { console.error("Track Error:", error); res.status(500).json({ message: 'Tracking lookup failed' }); }
+    try {
+        let tid = req.params.trackingId;
+
+        // Agar customer ne dash ke bina dala ho
+        if (!tid.includes('-') && tid.startsWith('SAHYOG')) {
+            tid = tid.replace('SAHYOG', 'SAHYOG-');
+        }
+
+        const delivery = await Delivery.findOne({ trackingId: tid });
+
+        if (!delivery) {
+            return res.status(404).json({ message: 'Tracking ID not found' });
+        }
+
+        res.json(delivery);
+    } catch (err) {
+        res.status(500).json({ message: 'Server error' });
+    }
 });
+
 // 10.2. Get VAPID Key
 app.get('/vapid-public-key', (req, res) => res.send(VAPID_PUBLIC_KEY));
 // --- (NEW) 10.3. Get Public Business Settings (Accessible by anyone or specific roles) ---
@@ -1052,3 +1067,4 @@ async function initialSetup() {
     catch (e) { console.error('Default settings check/create error:', e); }
 }
 setTimeout(initialSetup, 5000);
+
