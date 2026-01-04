@@ -7,20 +7,23 @@ const cors = require('cors');
 const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const webpush = require('web-push');
+const admin = require("firebase-admin");
 const { google } = require('googleapis');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+admin.initializeApp({
+  credential: admin.credential.cert(
+    require("./firebase-service-account.json")
+  )
+});
 // --- 1. Environment Variables ---
 const MONGO_URI = process.env.MONGO_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
-const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
-const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
 
-if (!MONGO_URI || !JWT_SECRET || !VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) {
+if (!MONGO_URI || !JWT_SECRET) {
     console.error('FATAL ERROR: Environment Variables are not set.');
     process.exit(1);
 }
@@ -30,8 +33,6 @@ mongoose.connect(MONGO_URI)
     .then(() => console.log('MongoDB से जुड़ गए!'))
     .catch(err => console.error('MongoDB से जुड़ने में गड़बड़ी:', err));
 
-// --- 3. Web Push Setup ---
-webpush.setVapidDetails('mailto:sonivedang7@gmail.com', VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
 
 // --- (NEW) Google Sheets API Setup ---
 const GOOGLE_SHEET_ID = process.env.GOOGLE_SHEET_ID;
@@ -59,6 +60,22 @@ if (GOOGLE_SHEET_ID && GOOGLE_SERVICE_ACCOUNT_EMAIL && GOOGLE_PRIVATE_KEY) {
     console.log("Google Sheets API setup skipped due to missing env variables.");
 }
 
+// --- 3.1. FCM Token Save Endpoint ---
+app.post('/save-fcm-token', auth(['admin','manager','delivery']), async (req, res) => {
+  const { token } = req.body;
+
+  if (!token) {
+    return res.status(400).json({ message: "FCM token missing" });
+  }
+
+  await User.findByIdAndUpdate(req.user.userId, {
+    fcmToken: token
+  });
+
+  res.json({ message: "FCM token saved" });
+});
+
+
 // --- 4. Schemas ---
 
 // 4.1. User Schema (No changes)
@@ -69,7 +86,7 @@ const userSchema = new mongoose.Schema({
     phone: { type: String },
     role: { type: String, enum: ['admin', 'manager', 'delivery'], required: true },
     isActive: { type: Boolean, default: true },
-    pushSubscription: { type: Object },
+    fcmToken: { type: String, default: null },
     createdByManager: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
 }, { timestamps: true });
 const User = mongoose.model('User', userSchema);
@@ -559,6 +576,23 @@ app.patch('/admin/delivery/:deliveryId/cancel', auth(['admin']), async (req, res
             // --- AUTO-SYNC (UPDATE) ---
             syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
 
+            // 🔔 FCM PUSH → Delivery Boy
+if (boy.fcmToken) {
+  await admin.messaging().send({
+    token: boy.fcmToken,
+    notification: {
+      title: "📦 New Delivery Assigned",
+      body: `Tracking ID: ${delivery.trackingId}`
+    },
+    webpush: {
+      fcmOptions: {
+        link: "https://sahyogdelivery.vercel.app/delivery.html"
+      }
+    }
+  });
+}
+
+
             res.json({ message: 'Delivery cancelled' });
         } else {
             res.status(400).json({ message: 'Delivery already completed or cancelled' });
@@ -908,14 +942,10 @@ app.patch('/manager/assign-delivery/:deliveryId', auth(['manager']), async (req,
         delivery.assignedBoyDetails = { name: boy.name, phone: boy.phone };
         delivery.statusUpdates.push({ status: 'Boy Assigned' });
         await delivery.save();
+
         
         // --- AUTO-SYNC (UPDATE) ---
         syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
-
-        if (boy.pushSubscription) {
-            const payload = JSON.stringify({ title: 'New Delivery Assigned!', body: `Order ${delivery.trackingId} for ${delivery.customerName}` });
-            webpush.sendNotification(boy.pushSubscription, payload).catch(err => console.error("Push error during assignment:", err));
-        }
 
         res.json({ message: 'Delivery assigned successfully', delivery: { _id: delivery._id, trackingId: delivery.trackingId, currentStatus: delivery.currentStatus } });
     } catch (error) {
@@ -983,14 +1013,44 @@ app.post('/delivery/complete', auth(['delivery']), async (req, res) => {
         // --- AUTO-SYNC (UPDATE) ---
         syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
         
+        // 🔔 FCM PUSH → Manager
+const manager = await User.findById(delivery.assignedByManager);
+
+if (manager && manager.fcmToken) {
+  await admin.messaging().send({
+    token: manager.fcmToken,
+    notification: {
+      title: "✅ Delivery Completed",
+      body: `Tracking ID: ${delivery.trackingId}`
+    },
+    webpush: {
+      fcmOptions: {
+        link: "https://sahyogdelivery.vercel.app/manager.html"
+      }
+    }
+  });
+}
+
+// 🔔 FCM PUSH → Admins
+const admins = await User.find({ role: 'admin', fcmToken: { $ne: null } });
+
+for (const a of admins) {
+  await admin.messaging().send({
+    token: a.fcmToken,
+    notification: {
+      title: "📢 Delivery Completed",
+      body: `Tracking ID: ${delivery.trackingId}`
+    },
+    webpush: {
+      fcmOptions: {
+        link: "https://sahyogdelivery.vercel.app/admin.html"
+      }
+    }
+  });
+}
+
         res.json({ trackingId: delivery.trackingId, status: 'Delivered' });
     } catch (error) { console.error("Complete Error:", error); res.status(500).json({ message: 'Server error completing delivery', error: error.message }); }
-});
-
-// 9.4. Subscribe to Push (No changes)
-app.post('/subscribe', auth(['delivery']), async (req, res) => {
-    try { await User.findByIdAndUpdate(req.user.userId, { pushSubscription: req.body }); res.status(201).json({ message: 'Subscribed' }); }
-    catch (error) { console.error("Subscribe Error:", error); res.status(500).json({ message: 'Failed to save subscription' }); }
 });
 
 // --- 10. Public API Routes --- (No changes)
@@ -1070,5 +1130,3 @@ async function initialSetup() {
     catch (e) { console.error('Default settings check/create error:', e); }
 }
 setTimeout(initialSetup, 5000);
-
-
