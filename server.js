@@ -10,8 +10,6 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { google } = require('googleapis');
 
-const auth = require("./middleware/auth");
-
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -580,22 +578,6 @@ app.patch('/admin/delivery/:deliveryId/cancel', auth(['admin']), async (req, res
             
             // --- AUTO-SYNC (UPDATE) ---
             syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
-
-            // 🔔 FCM PUSH → Delivery Boy
-if (boy.fcmToken) {
-  await admin.messaging().send({
-    token: boy.fcmToken,
-    notification: {
-      title: "📦 New Delivery Assigned",
-      body: `Tracking ID: ${delivery.trackingId}`
-    },
-    webpush: {
-      fcmOptions: {
-        link: "https://sahyogdelivery.vercel.app/delivery.html"
-      }
-    }
-  });
-}
 
 
             res.json({ message: 'Delivery cancelled' });
