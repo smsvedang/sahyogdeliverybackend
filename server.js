@@ -15,10 +15,13 @@ app.use(cors());
 app.use(express.json());
 
 admin.initializeApp({
-  credential: admin.credential.cert(
-    require("./firebase-service-account.json")
-  )
+  credential: admin.credential.cert({
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
+  })
 });
+
 // --- 1. Environment Variables ---
 const MONGO_URI = process.env.MONGO_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -942,6 +945,21 @@ app.patch('/manager/assign-delivery/:deliveryId', auth(['manager']), async (req,
         delivery.assignedBoyDetails = { name: boy.name, phone: boy.phone };
         delivery.statusUpdates.push({ status: 'Boy Assigned' });
         await delivery.save();
+
+        if (boy.fcmToken) {
+  await admin.messaging().send({
+    token: boy.fcmToken,
+    notification: {
+      title: "📦 New Delivery Assigned",
+      body: `Tracking ID: ${delivery.trackingId}`
+    },
+    webpush: {
+      fcmOptions: {
+        link: "https://sahyogdelivery.vercel.app/delivery.html"
+      }
+    }
+  });
+}
 
         
         // --- AUTO-SYNC (UPDATE) ---
