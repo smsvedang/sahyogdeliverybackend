@@ -3,7 +3,6 @@
 require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
-const admin = require("firebase-admin");
 const cors = require('cors');
 const path = require('path');
 const bcrypt = require('bcryptjs');
@@ -13,7 +12,8 @@ const { google } = require('googleapis');
 const app = express();
 app.use(cors());
 app.use(express.json());
-
+git 
+const admin = require("firebase-admin");
 admin.initializeApp({
   credential: admin.credential.cert({
     projectId: process.env.FIREBASE_PROJECT_ID,
@@ -25,8 +25,10 @@ admin.initializeApp({
 // --- 1. Environment Variables ---
 const MONGO_URI = process.env.MONGO_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
+const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
 
-if (!MONGO_URI || !JWT_SECRET) {
+
+if (!MONGO_URI || !JWT_SECRET || !VAPID_PUBLIC_KEY) {
     console.error('FATAL ERROR: Environment Variables are not set.');
     process.exit(1);
 }
