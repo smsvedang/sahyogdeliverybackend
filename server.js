@@ -977,7 +977,7 @@ app.patch('/manager/assign-delivery/:deliveryId', auth(['manager']), async (req,
       Urgency: "high"
     },
     notification: {
-      title: "🔥 Kaam Ready Hai , Parcel lene aajao",
+      title: "Ooo Bhaiya ye picup lene aajao 🚀",
       body: `Pickup ke liye ready ho jao 💪 
       Tracking ID: ${trackingId} | ${getISTTime()}`,
       icon: "https://sahyogdelivery.vercel.app/favicon.png",
