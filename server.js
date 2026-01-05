@@ -12,7 +12,7 @@ const { google } = require('googleapis');
 const app = express();
 app.use(cors());
 app.use(express.json());
-git 
+
 const admin = require("firebase-admin");
 admin.initializeApp({
   credential: admin.credential.cert({
@@ -1134,3 +1134,4 @@ async function initialSetup() {
     catch (e) { console.error('Default settings check/create error:', e); }
 }
 setTimeout(initialSetup, 5000);
+
