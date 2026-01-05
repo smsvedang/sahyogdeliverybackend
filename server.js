@@ -977,8 +977,8 @@ app.patch('/manager/assign-delivery/:deliveryId', auth(['manager']), async (req,
       Urgency: "high"
     },
     notification: {
-      title: "Ooo Bhaiya ye picup lene aajao 🚀",
-      body: `Pickup ke liye ready ho jao 💪 
+      title: "Ooo Bhaiya naya picup mil gaya🚀",
+      body: `Bhaiya aapko ek nayi delivery assign hui hai. Jaldi se pickup karne Sahyog par chale jayiye.
       Tracking ID: ${delivery.trackingId} | ${getISTTime()}`,
       icon: "https://sahyogdelivery.vercel.app/favicon.png",
       badge: "https://sahyogdelivery.vercel.app/favicon.png",
@@ -1216,3 +1216,4 @@ async function initialSetup() {
     catch (e) { console.error('Default settings check/create error:', e); }
 }
 setTimeout(initialSetup, 5000);
+
