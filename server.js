@@ -933,19 +933,28 @@ app.patch('/manager/assign-delivery/:deliveryId', auth(['manager']), async (req,
         await delivery.save();
 
         if (boy.fcmToken) {
-  await admin.messaging().send({
-    token: boy.fcmToken,
-    notification: {
-      title: "📦 New Delivery Assigned",
-      body: `Tracking ID: ${delivery.trackingId}`
-    },
-    webpush: {
-      fcmOptions: {
-        link: "https://sahyogdelivery.vercel.app/delivery.html"
+  try {
+    const response = await admin.messaging().send({
+      token: boy.fcmToken,
+      notification: {
+        title: "📦 New Delivery Assigned",
+        body: `Tracking ID: ${delivery.trackingId}`
+      },
+      webpush: {
+        fcmOptions: {
+          link: "https://sahyogdelivery.vercel.app/delivery.html"
+        }
       }
-    }
-  });
+    });
+
+    console.log("🔔 FCM SENT → DELIVERY:", response);
+  } catch (err) {
+    console.error("❌ FCM FAILED → DELIVERY:", err.code, err.message);
+  }
+} else {
+  console.log("⚠️ DELIVERY has no FCM token:", boy.name);
 }
+
 
         
         // --- AUTO-SYNC (UPDATE) ---
@@ -1021,36 +1030,49 @@ app.post('/delivery/complete', auth(['delivery']), async (req, res) => {
 const manager = await User.findById(delivery.assignedByManager);
 
 if (manager && manager.fcmToken) {
-  await admin.messaging().send({
-    token: manager.fcmToken,
-    notification: {
-      title: "✅ Delivery Completed",
-      body: `Tracking ID: ${delivery.trackingId}`
-    },
-    webpush: {
-      fcmOptions: {
-        link: "https://sahyogdelivery.vercel.app/manager.html"
+  try {
+    const response = await admin.messaging().send({
+      token: manager.fcmToken,
+      notification: {
+        title: "✅ Delivery Completed",
+        body: `Tracking ID: ${delivery.trackingId}`
+      },
+      webpush: {
+        fcmOptions: {
+          link: "https://sahyogdelivery.vercel.app/manager.html"
+        }
       }
-    }
-  });
+    });
+
+    console.log("🔔 FCM SENT → MANAGER:", response);
+  } catch (err) {
+    console.error("❌ FCM FAILED → MANAGER:", err.code, err.message);
+  }
 }
+
 
 // 🔔 FCM PUSH → Admins
 const admins = await User.find({ role: 'admin', fcmToken: { $ne: null } });
 
 for (const a of admins) {
-  await admin.messaging().send({
-    token: a.fcmToken,
-    notification: {
-      title: "📢 Delivery Completed",
-      body: `Tracking ID: ${delivery.trackingId}`
-    },
-    webpush: {
-      fcmOptions: {
-        link: "https://sahyogdelivery.vercel.app/admin.html"
+  try {
+    const response = await admin.messaging().send({
+      token: a.fcmToken,
+      notification: {
+        title: "📢 Delivery Completed",
+        body: `Tracking ID: ${delivery.trackingId}`
+      },
+      webpush: {
+        fcmOptions: {
+          link: "https://sahyogdelivery.vercel.app/admin.html"
+        }
       }
-    }
-  });
+    });
+
+    console.log(`🔔 FCM SENT → ADMIN (${a.name}):`, response);
+  } catch (err) {
+    console.error(`❌ FCM FAILED → ADMIN (${a.name}):`, err.code, err.message);
+  }
 }
 
         res.json({ trackingId: delivery.trackingId, status: 'Delivered' });
