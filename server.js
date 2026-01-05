@@ -979,7 +979,7 @@ app.patch('/manager/assign-delivery/:deliveryId', auth(['manager']), async (req,
     notification: {
       title: "Ooo Bhaiya ye picup lene aajao 🚀",
       body: `Pickup ke liye ready ho jao 💪 
-      Tracking ID: ${trackingId} | ${getISTTime()}`,
+      Tracking ID: ${delivery.trackingId} | ${getISTTime()}`,
       icon: "https://sahyogdelivery.vercel.app/favicon.png",
       badge: "https://sahyogdelivery.vercel.app/favicon.png",
       tag: `delivery-${Date.now()}`,
