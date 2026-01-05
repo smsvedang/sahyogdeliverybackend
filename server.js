@@ -300,7 +300,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// 5.2. Auth Middleware
+// 5.2. Auth Middleware (Moved to top)
 const auth = (roles = []) => {
     return (req, res, next) => {
         try {
@@ -1134,4 +1134,3 @@ async function initialSetup() {
     catch (e) { console.error('Default settings check/create error:', e); }
 }
 setTimeout(initialSetup, 5000);
-
