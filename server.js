@@ -935,7 +935,7 @@ app.patch('/manager/assign-delivery/:deliveryId', auth(['manager']), async (req,
         if (boy.fcmToken) {
   try {
     const response = await admin.messaging().send({
-  token: user.fcmToken,
+  token: boy.fcmToken,
   webpush: {
     headers: {
       Urgency: "high"
@@ -1039,7 +1039,7 @@ const manager = await User.findById(delivery.assignedByManager);
 if (manager && manager.fcmToken) {
   try {
     const response = await admin.messaging().send({
-  token: user.fcmToken,
+  token: manager.fcmToken,
   webpush: {
     headers: {
       Urgency: "high"
@@ -1071,7 +1071,7 @@ const admins = await User.find({ role: 'admin', fcmToken: { $ne: null } });
 for (const a of admins) {
   try {
     const response = await admin.messaging().send({
-  token: user.fcmToken,
+  token: a.fcmToken,
   webpush: {
     headers: {
       Urgency: "high"
