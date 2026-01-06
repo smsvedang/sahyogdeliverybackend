@@ -26,16 +26,17 @@ const sendNotification = async (token, title, body, userId = null, options = {})
   const message = {
     token,
     webpush: {
-      headers: options.headers || {},
+      headers: options.headers || { Urgency: "high" },
       notification: {
         title,
         body,
         icon: options.icon || "https://sahyogdelivery.vercel.app/favicon.png",
+        badge: options.badge || "https://sahyogdelivery.vercel.app/favicon.png",
         tag: options.tag || `msg-${Date.now()}`,
-        requireInteraction: options.requireInteraction || false
+        requireInteraction: options.requireInteraction ?? true
       },
       fcmOptions: {
-        link: options.link || "https://sahyogdelivery.vercel.app/"
+        link: options.link || "https://sahyogdelivery.vercel.app"
       }
     }
   };
@@ -43,17 +44,12 @@ const sendNotification = async (token, title, body, userId = null, options = {})
   try {
     await admin.messaging().send(message);
     console.log("✅ FCM sent to", token);
-  } catch (error) {
-    console.error("❌ FCM FAILED:", error.code, error.message);
-
-    const isInvalid = [
-      'messaging/invalid-registration-token',
-      'messaging/registration-token-not-registered',
-    ].includes(error.code);
-
-    if (isInvalid && userId) {
+  } catch (err) {
+    console.error("❌ FCM FAILED:", err.code, err.message);
+    const invalidCodes = ['messaging/invalid-registration-token', 'messaging/registration-token-not-registered'];
+    if (userId && invalidCodes.includes(err.code)) {
       await User.findByIdAndUpdate(userId, { $pull: { fcmTokens: token } });
-      console.log(`🧹 Removed invalid token for user ${userId}`);
+      console.log("🧹 Removed invalid token for user", userId);
     }
   }
 };
