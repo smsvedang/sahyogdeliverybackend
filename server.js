@@ -425,7 +425,7 @@ app.get('/admin/deliveries', auth(['admin']), async (req, res) => {
     try {
         const deliveries = await Delivery.find()
             .populate('assignedByManager', 'name') 
-            .populate('assignedTo', 'name email isActive') 
+            .populate('assignedTo', 'name email isActive phone') 
             .sort({ createdAt: -1 });
         res.json(deliveries);
     } catch (error) {
@@ -862,7 +862,7 @@ app.get('/manager/all-pending-deliveries', auth(['manager']), async (req, res) =
       assignedByManager: req.user.userId,
       'statusUpdates.status': { $ne: 'Delivered' }
     })
-    .populate('assignedTo', 'name')
+    .populate('assignedTo', 'name phone')
     .sort({ createdAt: -1 });
 
     res.json(deliveries);
@@ -938,8 +938,7 @@ app.patch('/manager/assign-delivery/:deliveryId', auth(['manager']), async (req,
 
         delivery.assignedTo = boy._id;
         delivery.assignedBoyDetails = { name: boy.name, phone: boy.phone };
-        delivery.statusUpdates.push({ status: 'Boy Assigned' });
-        await delivery.save();
+        delivery.assignedAt = new Date();
 
         if (boy.fcmToken) {
   try {
@@ -991,7 +990,7 @@ app.get('/manager/all-pending-deliveries', auth(['manager']), async (req, res) =
             assignedByManager: req.user.userId, 
             'statusUpdates.status': { $nin: ['Delivered', 'Cancelled'] } 
         })
-        .populate('assignedTo', 'name') 
+.populate('assignedTo', 'name phone') 
         .sort({ createdAt: -1 }); 
 
         res.json(deliveries);
@@ -1018,22 +1017,36 @@ app.post('/manager/reassign-delivery/:deliveryId', auth(['manager']), async (req
       return res.status(400).json({ message: 'Cannot reassign a delivered delivery' });
     }
 
-    const oldAssignedTo = delivery.assignedTo;
-    delivery.assignedTo = newDeliveryBoyId;
+    const oldAssignedToId = delivery.assignedTo;
+    const oldDeliveryBoy = oldAssignedToId ? await User.findById(oldAssignedToId) : null;
+
+    const newDeliveryBoy = await User.findById(newDeliveryBoyId);
+    if (!newDeliveryBoy || newDeliveryBoy.role !== 'delivery') {
+      return res.status(404).json({ message: 'Delivery boy not found or invalid' });
+    }
+    if (!newDeliveryBoy.isActive) {
+      return res.status(400).json({ message: 'Cannot assign to inactive delivery boy' });
+    }
+
+    delivery.assignedTo = newDeliveryBoy._id;
+    delivery.assignedBoyDetails = { name: newDeliveryBoy.name, phone: newDeliveryBoy.phone };
     delivery.assignedByManager = managerId; // Ensure manager who reassigned is recorded
+    delivery.assignedAt = new Date();
 
     // Add status update for reassignment
     delivery.statusUpdates.push({
       status: 'Reassigned',
       timestamp: new Date(),
-      location: 'Manager Panel', // Or get actual location if available
-      remarks: `Delivery reassigned from ${oldAssignedTo ? oldAssignedTo.name : 'unassigned'} to new boy.`
+      location: 'Manager Panel',
+      remarks: `Reassigned from ${oldDeliveryBoy ? oldDeliveryBoy.name : 'Unassigned'} to ${newDeliveryBoy.name}`
     });
 
     await delivery.save();
 
+    // --- AUTO-SYNC (UPDATE) ---
+    syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
+
     // Send web push notifications
-    const newDeliveryBoy = await User.findById(newDeliveryBoyId);
     if (newDeliveryBoy && newDeliveryBoy.fcmToken) {
       try {
         await admin.messaging().send({
@@ -1056,28 +1069,25 @@ app.post('/manager/reassign-delivery/:deliveryId', auth(['manager']), async (req
       }
     }
 
-    if (oldAssignedTo) {
-      const oldDeliveryBoy = await User.findById(oldAssignedTo);
-      if (oldDeliveryBoy && oldDeliveryBoy.fcmToken) {
-        try {
-          await admin.messaging().send({
-            token: oldDeliveryBoy.fcmToken,
-            webpush: {
-              headers: { Urgency: "high" },
-              notification: {
-                title: "Delivery Unassigned",
-                body: `Aapki ek delivery unassign ho gayi hai. Tracking ID: ${delivery.trackingId} | ${getISTTime()}`,
-                icon: "https://sahyogdelivery.vercel.app/favicon.png",
-                badge: "https://sahyogdelivery.vercel.app/favicon.png",
-                tag: `delivery-unassigned-${Date.now()}`,
-                requireInteraction: true
-              },
+    if (oldDeliveryBoy && oldDeliveryBoy.fcmToken) {
+      try {
+        await admin.messaging().send({
+          token: oldDeliveryBoy.fcmToken,
+          webpush: {
+            headers: { Urgency: "high" },
+            notification: {
+              title: "Delivery Unassigned",
+              body: `Aapki ek delivery unassign ho gayi hai. Tracking ID: ${delivery.trackingId} | ${getISTTime()}`,
+              icon: "https://sahyogdelivery.vercel.app/favicon.png",
+              badge: "https://sahyogdelivery.vercel.app/favicon.png",
+              tag: `delivery-unassigned-${Date.now()}`,
+              requireInteraction: true
             },
-          });
-          console.log("🔔 FCM SENT → OLD DELIVERY BOY (UNASSIGNED)");
-        } catch (err) {
-          console.error("❌ FCM FAILED → OLD DELIVERY BOY (UNASSIGNED):", err.code, err.message);
-        }
+          },
+        });
+        console.log("🔔 FCM SENT → OLD DELIVERY BOY (UNASSIGNED)");
+      } catch (err) {
+        console.error("❌ FCM FAILED → OLD DELIVERY BOY (UNASSIGNED):", err.code, err.message);
       }
     }
 
@@ -1206,12 +1216,12 @@ app.get('/track/:trackingId', async (req, res) => {
         const inputTid = req.params.trackingId;
 
         // 1️⃣ Try exact match first (NEW IDs: SAHYOG123456)
-        let delivery = await Delivery.findOne({ trackingId: inputTid });
+        let delivery = await Delivery.findOne({ trackingId: inputTid }).populate('assignedTo', 'name phone');
 
         // 2️⃣ If not found, try OLD format (SAHYOG-123456)
         if (!delivery && inputTid.startsWith('SAHYOG') && !inputTid.includes('-')) {
             const oldTid = inputTid.replace('SAHYOG', 'SAHYOG-');
-            delivery = await Delivery.findOne({ trackingId: oldTid });
+            delivery = await Delivery.findOne({ trackingId: oldTid }).populate('assignedTo', 'name phone');
         }
 
         if (!delivery) {
