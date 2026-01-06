@@ -920,33 +920,6 @@ app.post('/manager/create-delivery-boy', auth(['manager']), async (req, res) => 
     }
 });
 
-// Manager can update ONLY delivery boys created under him
-app.put('/manager/user/:userId', auth(['manager']), async (req, res) => {
-    try {
-        const { userId } = req.params;
-        const { name, email, phone, password, isActive } = req.body;
-
-        const boy = await User.findOne({ _id: userId, createdByManager: req.user.userId });
-
-        if (!boy) return res.status(403).json({ message: "Not allowed. This delivery boy is not under you." });
-
-        if (name) boy.name = name;
-        if (email) boy.email = email.toLowerCase();
-        if (phone) boy.phone = phone;
-        if (typeof isActive !== "undefined") boy.isActive = isActive;
-
-        if (password && password.trim() !== "") {
-            boy.password = await bcrypt.hash(password, 10);
-        }
-
-        await boy.save();
-        res.json({ message: "Delivery boy updated successfully!" });
-
-    } catch (e) {
-        res.status(500).json({ message: "Update Failed", error: e.message });
-    }
-});
-
 // 8.4. Manager: Assign Delivery to Boy
 app.patch('/manager/assign-delivery/:deliveryId', auth(['manager']), async (req, res) => {
     try {
@@ -978,7 +951,7 @@ app.patch('/manager/assign-delivery/:deliveryId', auth(['manager']), async (req,
     },
     notification: {
       title: "Ooo Bhaiya naya picup mil gaya🚀",
-      body: `Bhaiya aapko ek nayi delivery assign hui hai. Jaldi se pickup karne Sahyog par chale jayiye.
+      body: `Bhaiya aapko ek nayi delivery assign hui hai. Jaldi se pickup karne Sahyog par chale jayiye. 
       Tracking ID: ${delivery.trackingId} | ${getISTTime()}`,
       icon: "https://sahyogdelivery.vercel.app/favicon.png",
       badge: "https://sahyogdelivery.vercel.app/favicon.png",
@@ -1028,6 +1001,93 @@ app.get('/manager/all-pending-deliveries', auth(['manager']), async (req, res) =
     }
 });
 
+// 8.6. Manager: Reassign Delivery
+app.post('/manager/reassign-delivery/:deliveryId', auth(['manager']), async (req, res) => {
+  try {
+    const { deliveryId } = req.params;
+    const { newDeliveryBoyId } = req.body;
+    const managerId = req.user.userId;
+
+    const delivery = await Delivery.findById(deliveryId);
+
+    if (!delivery) {
+      return res.status(404).json({ message: 'Delivery not found' });
+    }
+
+    if (delivery.statusUpdates.some(update => update.status === 'Delivered')) {
+      return res.status(400).json({ message: 'Cannot reassign a delivered delivery' });
+    }
+
+    const oldAssignedTo = delivery.assignedTo;
+    delivery.assignedTo = newDeliveryBoyId;
+    delivery.assignedByManager = managerId; // Ensure manager who reassigned is recorded
+
+    // Add status update for reassignment
+    delivery.statusUpdates.push({
+      status: 'Reassigned',
+      timestamp: new Date(),
+      location: 'Manager Panel', // Or get actual location if available
+      remarks: `Delivery reassigned from ${oldAssignedTo ? oldAssignedTo.name : 'unassigned'} to new boy.`
+    });
+
+    await delivery.save();
+
+    // Send web push notifications
+    const newDeliveryBoy = await User.findById(newDeliveryBoyId);
+    if (newDeliveryBoy && newDeliveryBoy.fcmToken) {
+      try {
+        await admin.messaging().send({
+          token: newDeliveryBoy.fcmToken,
+          webpush: {
+            headers: { Urgency: "high" },
+            notification: {
+              title: "Ooo Bhaiya naya picup mil gaya🚀",
+              body: `Bhaiya aapko ek nayi delivery assign hui hai. Jaldi se pickup karne Sahyog par chale jayiye. Tracking ID: ${delivery.trackingId} | ${getISTTime()}`,
+              icon: "https://sahyogdelivery.vercel.app/favicon.png",
+              badge: "https://sahyogdelivery.vercel.app/favicon.png",
+              tag: `delivery-${Date.now()}`,
+              requireInteraction: true
+            },
+          },
+        });
+        console.log("🔔 FCM SENT → NEW DELIVERY BOY (ASSIGNED)");
+      } catch (err) {
+        console.error("❌ FCM FAILED → NEW DELIVERY BOY (ASSIGNED):", err.code, err.message);
+      }
+    }
+
+    if (oldAssignedTo) {
+      const oldDeliveryBoy = await User.findById(oldAssignedTo);
+      if (oldDeliveryBoy && oldDeliveryBoy.fcmToken) {
+        try {
+          await admin.messaging().send({
+            token: oldDeliveryBoy.fcmToken,
+            webpush: {
+              headers: { Urgency: "high" },
+              notification: {
+                title: "Delivery Unassigned",
+                body: `Aapki ek delivery unassign ho gayi hai. Tracking ID: ${delivery.trackingId} | ${getISTTime()}`,
+                icon: "https://sahyogdelivery.vercel.app/favicon.png",
+                badge: "https://sahyogdelivery.vercel.app/favicon.png",
+                tag: `delivery-unassigned-${Date.now()}`,
+                requireInteraction: true
+              },
+            },
+          });
+          console.log("🔔 FCM SENT → OLD DELIVERY BOY (UNASSIGNED)");
+        } catch (err) {
+          console.error("❌ FCM FAILED → OLD DELIVERY BOY (UNASSIGNED):", err.code, err.message);
+        }
+      }
+    }
+
+    res.json({ message: 'Delivery reassigned successfully', delivery });
+
+  } catch (error) {
+    console.error("Reassign Delivery Error:", error);
+    res.status(500).json({ message: 'Error reassigning delivery' });
+  }
+});
 
 // --- 9. Delivery Boy API Routes ---
 
@@ -1216,4 +1276,3 @@ async function initialSetup() {
     catch (e) { console.error('Default settings check/create error:', e); }
 }
 setTimeout(initialSetup, 5000);
-
