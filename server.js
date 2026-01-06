@@ -23,6 +23,12 @@ admin.initializeApp({
 });
 
 const sendNotification = async (token, title, body, userId = null, options = {}) => {
+  // Debug: show we are attempting to send (mask token partially)
+  try {
+    const masked = token ? `${token.toString().slice(0,6)}...` : 'no-token';
+    console.log("→ sendNotification: Attempting to send FCM", { title, to: masked });
+  } catch (e) { /* ignore masking errors */ }
+
   const message = {
     token,
     webpush: {
@@ -43,7 +49,7 @@ const sendNotification = async (token, title, body, userId = null, options = {})
 
   try {
     await admin.messaging().send(message);
-    console.log("✅ FCM sent to", token);
+    console.log("✅ FCM sent to", token ? `${token.toString().slice(0,6)}...` : token);
   } catch (err) {
     console.error("❌ FCM FAILED:", err.code, err.message);
     const invalidCodes = ['messaging/invalid-registration-token', 'messaging/registration-token-not-registered'];
@@ -143,6 +149,9 @@ app.post('/api/save-fcm-token', auth(['admin','manager','delivery']), async (req
   await User.findByIdAndUpdate(req.user.userId, {
   $addToSet: { fcmTokens: token }
 });
+
+  // Debugging: log token save (masked)
+  try { console.log(`[FCM] Saved token for user ${req.user.userId}:`, token ? `${token.toString().slice(0,6)}...` : 'no-token'); } catch (e) {}
 
   res.json({ message: "FCM token saved" });
 });
@@ -976,35 +985,35 @@ app.patch('/manager/assign-delivery/:deliveryId', auth(['manager']), async (req,
         // --- AUTO-SYNC (UPDATE) ---
         syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
 
-        if (boy.fcmToken) {
+        // Debug: log token count for this boy
+        const boyTokens = Array.isArray(boy.fcmTokens) ? boy.fcmTokens : (boy.fcmTokens ? [boy.fcmTokens] : []);
+        console.log(`[Assign] Delivery ${delivery.trackingId} assigned to ${boy.name}. fcmTokens count:`, boyTokens.length);
+
+        if (boyTokens.length) {
           try {
-            const response = await admin.messaging().send({
-              token: boy.fcmToken,
-              webpush: {
-                headers: {
-                  Urgency: "high"
-                },
-                notification: {
-                  title: "Ooo Bhaiya naya picup mil gaya🚀",
-                  body: `Bhaiya aapko ek nayi delivery assign hui hai. Jaldi se pickup karne Sahyog par chale jayiye. Tracking ID: ${delivery.trackingId} | ${getISTTime()}`,
+            for (const token of boyTokens) {
+              await sendNotification(
+                token,
+                "Ooo Bhaiya naya picup mil gaya🚀",
+                `Bhaiya aapko ek nayi delivery assign hui hai. Jaldi se pickup karne Sahyog par chale jayiye. Tracking ID: ${delivery.trackingId} | ${getISTTime()}`,
+                boy._id,
+                {
+                  headers: { Urgency: "high" },
                   icon: "https://sahyogdelivery.vercel.app/favicon.png",
                   badge: "https://sahyogdelivery.vercel.app/favicon.png",
                   tag: `delivery-${Date.now()}`,
-                  requireInteraction: true
-                },
-                fcmOptions: {
+                  requireInteraction: true,
                   link: "https://sahyogdelivery.vercel.app/login.html"
                 }
-              }
-            });
-
-    console.log("🔔 FCM SENT → DELIVERY:", response);
-  } catch (err) {
-    console.error("❌ FCM FAILED → DELIVERY:", err.code, err.message);
-  }
-} else {
-  console.log("⚠️ DELIVERY has no FCM token:", boy.name);
-}
+              );
+            }
+            console.log("🔔 FCM SENT → DELIVERY (assigned)");
+          } catch (err) {
+            console.error("❌ FCM FAILED → DELIVERY (assigned):", err.code, err.message);
+          }
+        } else {
+          console.log("⚠️ DELIVERY has no FCM tokens:", boy.name);
+        }
 
 
         
@@ -1093,10 +1102,14 @@ app.post('/manager/reassign-delivery/:deliveryId', auth(['manager']), async (req
     // --- AUTO-SYNC (UPDATE) ---
     syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
 
+    // Debug: token counts
+    console.log(`[Reassign] Delivery ${delivery.trackingId} reassigned from ${oldDeliveryBoy ? oldDeliveryBoy.name : 'Unassigned'} to ${newDeliveryBoy.name}. New tokens:`, Array.isArray(newDeliveryBoy?.fcmTokens) ? newDeliveryBoy.fcmTokens.length : (newDeliveryBoy?.fcmTokens ? 1 : 0), 'Old tokens:', Array.isArray(oldDeliveryBoy?.fcmTokens) ? oldDeliveryBoy.fcmTokens.length : (oldDeliveryBoy?.fcmTokens ? 1 : 0));
+
     // Send web push notifications
-    if (newDeliveryBoy?.fcmTokens?.length) {
+    const newTokens = Array.isArray(newDeliveryBoy?.fcmTokens) ? newDeliveryBoy.fcmTokens : (newDeliveryBoy?.fcmTokens ? [newDeliveryBoy.fcmTokens] : []);
+    if (newTokens.length) {
       try {
-        for (const token of newDeliveryBoy.fcmTokens) {
+        for (const token of newTokens) {
           await sendNotification(
             token,
             "Ooo Bhaiya naya picup mil gaya🚀",
@@ -1115,11 +1128,14 @@ app.post('/manager/reassign-delivery/:deliveryId', auth(['manager']), async (req
       } catch (err) {
         console.error("❌ FCM FAILED → NEW DELIVERY BOY (ASSIGNED):", err.code, err.message);
       }
+    } else {
+      console.log("⚠️ NEW delivery boy has no FCM tokens:", newDeliveryBoy.name);
     }
 
-    if (oldDeliveryBoy?.fcmTokens?.length) {
+    const oldTokens = Array.isArray(oldDeliveryBoy?.fcmTokens) ? oldDeliveryBoy.fcmTokens : (oldDeliveryBoy?.fcmTokens ? [oldDeliveryBoy.fcmTokens] : []);
+    if (oldTokens.length) {
       try {
-        for (const token of oldDeliveryBoy.fcmTokens) {
+        for (const token of oldTokens) {
           await sendNotification(
             token,
             "Delivery Unassigned",
@@ -1138,6 +1154,8 @@ app.post('/manager/reassign-delivery/:deliveryId', auth(['manager']), async (req
       } catch (err) {
         console.error("❌ FCM FAILED → OLD DELIVERY BOY (UNASSIGNED):", err.code, err.message);
       }
+    } else {
+      if (oldDeliveryBoy) console.log("⚠️ OLD delivery boy has no FCM tokens:", oldDeliveryBoy.name);
     }
 
     res.json({ message: 'Delivery reassigned successfully', delivery });
