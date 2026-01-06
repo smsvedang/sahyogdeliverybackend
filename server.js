@@ -1080,6 +1080,18 @@ app.post('/manager/reassign-delivery/:deliveryId', auth(['manager']), async (req
       remarks: `Reassigned from ${oldDeliveryBoy ? oldDeliveryBoy.name : 'Unassigned'} to ${newDeliveryBoy.name}`
     });
 
+    // Also add a 'Boy Assigned' status so the newly assigned delivery boy can proceed with scanning.
+    // Only add this if the parcel is not already in a post-pickup state and avoid duplicates.
+    const unsafeStatuses = ['Picked Up', 'Out for Delivery', 'Delivered', 'Cancelled'];
+    if (delivery.currentStatus !== 'Boy Assigned' && !unsafeStatuses.includes(delivery.currentStatus)) {
+      delivery.statusUpdates.push({
+        status: 'Boy Assigned',
+        timestamp: new Date(),
+        location: 'Manager Panel',
+        remarks: `Assigned to ${newDeliveryBoy.name} after reassignment`
+      });
+    }
+
     await delivery.save();
 
     // --- AUTO-SYNC (UPDATE) ---
