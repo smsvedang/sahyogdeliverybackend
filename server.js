@@ -109,8 +109,8 @@ app.post('/api/save-fcm-token', auth(['admin','manager','delivery']), async (req
   }
 
   await User.findByIdAndUpdate(req.user.userId, {
-    fcmToken: token
-  });
+  $addToSet: { fcmTokens: token }
+});
 
   res.json({ message: "FCM token saved" });
 });
@@ -936,32 +936,36 @@ app.patch('/manager/assign-delivery/:deliveryId', auth(['manager']), async (req,
         if (!boy) return res.status(404).json({ message: 'Delivery boy not found or does not belong to you' });
         if (!boy.isActive) return res.status(400).json({ message: 'Cannot assign to inactive delivery boy' });
 
-        delivery.assignedTo = boy._id;
-        delivery.assignedBoyDetails = { name: boy.name, phone: boy.phone };
+        delivery.assignedTo = boy._id;
+        delivery.assignedBoyDetails = { name: boy.name, phone: boy.phone };
         delivery.assignedAt = new Date();
+        delivery.statusUpdates.push({ status: 'Boy Assigned', timestamp: new Date() });
+        await delivery.save();
+
+        // --- AUTO-SYNC (UPDATE) ---
+        syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
 
         if (boy.fcmToken) {
-  try {
-    const response = await admin.messaging().send({
-  token: boy.fcmToken,
-  webpush: {
-    headers: {
-      Urgency: "high"
-    },
-    notification: {
-      title: "Ooo Bhaiya naya picup mil gaya🚀",
-      body: `Bhaiya aapko ek nayi delivery assign hui hai. Jaldi se pickup karne Sahyog par chale jayiye. 
-      Tracking ID: ${delivery.trackingId} | ${getISTTime()}`,
-      icon: "https://sahyogdelivery.vercel.app/favicon.png",
-      badge: "https://sahyogdelivery.vercel.app/favicon.png",
-      tag: `delivery-${Date.now()}`,
-      requireInteraction: true
-    },
-    fcmOptions: {
-      link: "https://sahyogdelivery.vercel.app/login.html"
-    }
-  }
-});
+          try {
+            const response = await admin.messaging().send({
+              token: boy.fcmToken,
+              webpush: {
+                headers: {
+                  Urgency: "high"
+                },
+                notification: {
+                  title: "Ooo Bhaiya naya picup mil gaya🚀",
+                  body: `Bhaiya aapko ek nayi delivery assign hui hai. Jaldi se pickup karne Sahyog par chale jayiye. Tracking ID: ${delivery.trackingId} | ${getISTTime()}`,
+                  icon: "https://sahyogdelivery.vercel.app/favicon.png",
+                  badge: "https://sahyogdelivery.vercel.app/favicon.png",
+                  tag: `delivery-${Date.now()}`,
+                  requireInteraction: true
+                },
+                fcmOptions: {
+                  link: "https://sahyogdelivery.vercel.app/login.html"
+                }
+              }
+            });
 
     console.log("🔔 FCM SENT → DELIVERY:", response);
   } catch (err) {
