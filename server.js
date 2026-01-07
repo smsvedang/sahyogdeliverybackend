@@ -167,7 +167,7 @@ const userSchema = new mongoose.Schema({
     phone: { type: String },
     role: { type: String, enum: ['admin', 'manager', 'delivery'], required: true },
     isActive: { type: Boolean, default: true },
-    fcmTokens: { type: String, default: null },
+    fcmTokens: { type: [String], default: [] },
     createdByManager: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
 }, { timestamps: true });
 const User = mongoose.model('User', userSchema);
@@ -389,9 +389,9 @@ app.use(express.static(path.join(__dirname)));
 //app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
 //app.get('/delivery', (req, res) => res.sendFile(path.join(__dirname, 'delivery.html')));
 //app.get('/manager', (req, res) => res.sendFile(path.join(__dirname, 'manager.html')));
-app.get('/service-worker.js', (req, res) => {
-    res.setHeader('Content-Type', 'application/javascript');
-    res.sendFile(path.join(__dirname, 'service-worker.js'));
+app.get('/firebase-messaging-sw.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript');
+  res.sendFile(path.join(__dirname, 'firebase-messaging-sw.js'));
 });
 
 
