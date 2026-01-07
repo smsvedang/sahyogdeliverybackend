@@ -1208,51 +1208,27 @@ app.post('/delivery/complete', auth(['delivery']), async (req, res) => {
         syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
         
         // 🔔 FCM PUSH → Manager
-const manager = await User.findById(delivery.assignedByManager);
+// 🔔 FCM PUSH → Admins (Delivery Complete)
+const admins = await User.find({ role: 'admin', isActive: true });
 
-if (manager?.fcmTokens?.length) {
-  try {
-    for (const token of manager.fcmTokens) {
-      await sendNotification(
-        token,
-        "📦 Delivered Successfully",
-        `Manager saahab parcel successfully deliver ho gaya.\nTracking ID: ${delivery.trackingId} | ${getISTTime()}`,
-        manager._id,
-        {
-          headers: { Urgency: "high" },
-          icon: "https://sahyogdelivery.vercel.app/favicon.png",
-          badge: "https://sahyogdelivery.vercel.app/favicon.png",
-          tag: `delivery-${Date.now()}`,
-          requireInteraction: true,
-          link: "https://sahyogdelivery.vercel.app"
-        }
-      );
-    }
-    console.log("🔔 FCM SENT → MANAGER");
-  } catch (err) {
-    console.error("❌ FCM FAILED → MANAGER:", err.code, err.message);
-  }
-}
-
-
-// 🔔 FCM PUSH → Admins
-const admins = await User.find({ role: 'admin' });
 for (const a of admins) {
   if (a?.fcmTokens?.length) {
     try {
       for (const token of a.fcmTokens) {
         await sendNotification(
           token,
-          "📦 Sahyog Delivery Complete",
-          `Sahyog Medical aapka ye parcel maine de diya.\nTracking ID: ${delivery.trackingId} | ${getISTTime()}`,
+          "✅ Delivery Completed",
+          `Ek delivery successfully complete ho gayi hai.
+Tracking ID: ${delivery.trackingId}
+Time: ${getISTTime()}`,
           a._id,
           {
             headers: { Urgency: "high" },
             icon: "https://sahyogdelivery.vercel.app/favicon.png",
             badge: "https://sahyogdelivery.vercel.app/favicon.png",
-            tag: `delivery-${Date.now()}`,
+            tag: `admin-delivery-${delivery.trackingId}`,
             requireInteraction: true,
-            link: "https://sahyogdelivery.vercel.app"
+            link: "https://sahyogdelivery.vercel.app/admin.html"
           }
         );
       }
@@ -1260,6 +1236,8 @@ for (const a of admins) {
     } catch (err) {
       console.error(`❌ FCM FAILED → ADMIN (${a.name}):`, err.code, err.message);
     }
+  } else {
+    console.log(`⚠️ ADMIN has no FCM tokens: ${a.name}`);
   }
 }
 
