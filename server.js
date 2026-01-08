@@ -1128,6 +1128,49 @@ app.post('/admin/book-from-draft/:draftId', auth(['admin']), async (req, res) =>
   }
 });
 
+//--- Convert Draft to Comopleted Delivery ---
+app.post('/admin/convert-draft-to-courier', auth(['admin']), async (req, res) => {
+  try {
+    const { draftId, managerId, paymentMethod } = req.body;
+
+    const draft = await DraftOrder.findById(draftId);
+    if (!draft) {
+      return res.status(404).json({ message: "Draft not found" });
+    }
+
+    // ✅ 1. Courier create
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+    const trackingId = 'SAHYOG' + Date.now().toString().slice(-6);
+
+    const delivery = new Delivery({
+      customerName: draft.customerName,
+      customerAddress: draft.address,
+      customerPhone: draft.phone,
+      trackingId,
+      otp,
+      paymentMethod: paymentMethod || 'Prepaid',
+      billAmount: draft.amount || 0,
+      assignedByManager: managerId || null,
+      statusUpdates: [{ status: 'Booked' }]
+    });
+
+    await delivery.save();
+
+    // ✅ 2. 🔥 MOST IMPORTANT LINE (THIS WAS MISSING)
+    draft.status = "CONVERTED";
+    await draft.save();
+
+    res.json({
+      message: "Draft converted & courier booked",
+      trackingId
+    });
+
+  } catch (err) {
+    console.error("Convert draft error:", err);
+    res.status(500).json({ message: "Conversion failed" });
+  }
+});
+
 // --- 8. Manager API Routes ---
 
 // 8.1. Manager: Get Pickups assigned (No changes)
