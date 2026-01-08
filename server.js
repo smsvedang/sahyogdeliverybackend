@@ -990,14 +990,30 @@ async function fetchMargmartEmails() {
       format: 'full'
     });
 
-    const part = full.data.payload.parts?.find(
-      p => p.mimeType === 'text/plain'
-    );
-    if (!part) continue;
+    let body = "";
 
-    const body = Buffer.from(part.body.data, 'base64').toString('utf-8');
+if (full.data.payload.parts) {
+  const textPart = full.data.payload.parts.find(
+    p => p.mimeType === "text/plain"
+  );
+  const htmlPart = full.data.payload.parts.find(
+    p => p.mimeType === "text/html"
+  );
+
+  const part = textPart || htmlPart;
+  if (!part) continue;
+
+  body = Buffer.from(part.body.data, "base64").toString("utf-8");
+} else if (full.data.payload.body?.data) {
+  body = Buffer.from(
+    full.data.payload.body.data,
+    "base64"
+  ).toString("utf-8");
+}
+
     const parsed = parseMargmartEmail(body);
-
+    const cleanText = body.replace(/<[^>]*>/g, ' ');
+    
     if (!parsed?.orderNumber || !parsed?.address) {
   console.log("⚠️ Email parsed but required fields missing");
   continue;
