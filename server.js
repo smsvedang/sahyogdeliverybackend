@@ -8,6 +8,7 @@ const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { google } = require('googleapis');
+const cron = require("node-cron");
 
 const app = express();
 app.use(cors());
@@ -1014,7 +1015,7 @@ if (full.data.payload.parts) {
     const cleanText = body.replace(/<[^>]*>/g, ' ');
 const parsed = parseMargmartEmail(cleanText);
 
-    
+
     if (!parsed?.orderNumber || !parsed?.address) {
   console.log("⚠️ Email parsed but required fields missing");
   continue;
@@ -1051,6 +1052,77 @@ await DraftOrder.create({
 console.log(`📨 Draft created for order ${parsed.orderNumber}`);
   }
 }
+// ✅ mark email as processed
+await gmail.users.messages.modify({
+  userId: 'me',
+  id: msg.id,
+  requestBody: {
+    removeLabelIds: ['UNREAD']
+  }
+});
+
+// 🔁 Auto fetch Margmart emails every 5 minutes
+cron.schedule("*/5 * * * *", async () => {
+  console.log("⏰ Auto fetching Margmart emails...");
+  try {
+    await fetchMargmartEmails();
+  } catch (e) {
+    console.error("Auto fetch failed", e.message);
+  }
+});
+
+// 7.x. Book Courier FROM Draft
+app.post('/admin/book-from-draft/:draftId', auth(['admin']), async (req, res) => {
+  try {
+    const { draftId } = req.params;
+    const { managerId } = req.body;
+
+    // 1️⃣ Draft uthao
+    const draft = await DraftOrder.findById(draftId);
+    if (!draft) {
+      return res.status(404).json({ message: "Draft not found" });
+    }
+
+    if (draft.status !== 'DRAFT') {
+      return res.status(400).json({ message: "Draft already processed" });
+    }
+
+    // 2️⃣ Delivery banao
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+    const trackingId = 'SAHYOG' + Date.now().toString().slice(-6);
+
+    const delivery = new Delivery({
+      customerName: draft.customerName,
+      customerAddress: draft.address,
+      customerPhone: draft.phone,
+      trackingId,
+      otp,
+      paymentMethod: draft.paymentMethod || 'Prepaid',
+      billAmount: draft.amount || 0,
+      assignedByManager: managerId || null,
+      statusUpdates: [{ status: 'Booked' }],
+      codPaymentStatus: 'Not Applicable'
+    });
+
+    await delivery.save();
+
+    // 3️⃣ 🔥 YAHI PAR ADD KARNA THA (IMPORTANT)
+    draft.status = "CONVERTED";
+    await draft.save();
+
+    // 4️⃣ Google Sheet sync
+    syncSingleDeliveryToSheet(delivery._id, 'create').catch(console.error);
+
+    res.json({
+      message: "Draft converted & courier booked",
+      trackingId
+    });
+
+  } catch (err) {
+    console.error("Book from draft error:", err);
+    res.status(500).json({ message: "Failed to book from draft" });
+  }
+});
 
 // --- 8. Manager API Routes ---
 
@@ -1469,4 +1541,3 @@ async function initialSetup() {
     catch (e) { console.error('Default settings check/create error:', e); }
 }
 setTimeout(initialSetup, 5000);
-
