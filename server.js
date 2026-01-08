@@ -962,6 +962,46 @@ app.post('/api/fetch-margmart-orders', auth(['admin']), async (req, res) => {
   }
 });
 
+async function fetchMargmartEmails() {
+  const auth = new google.auth.OAuth2(
+    process.env.GMAIL_CLIENT_ID,
+    process.env.GMAIL_CLIENT_SECRET,
+    process.env.GMAIL_REDIRECT_URI
+  );
+
+  auth.setCredentials({
+    refresh_token: process.env.GMAIL_REFRESH_TOKEN
+  });
+
+  const gmail = google.gmail({ version: 'v1', auth });
+
+  // 🔴 YAHI PAR noreply@margmart.com LAGTA HAI
+  const res = await gmail.users.messages.list({
+    userId: 'me',
+    q: 'from:noreply@margmart.com'
+  });
+
+  if (!res.data.messages) return;
+
+  for (const msg of res.data.messages) {
+    const full = await gmail.users.messages.get({
+      userId: 'me',
+      id: msg.id,
+      format: 'full'
+    });
+
+    const part = full.data.payload.parts?.find(
+      p => p.mimeType === 'text/plain'
+    );
+    if (!part) continue;
+
+    const body = Buffer.from(part.body.data, 'base64').toString('utf-8');
+    const parsed = parseMargmartEmail(body);
+
+    // yahin se DraftOrder create / skip hota hai
+  }
+}
+
 // --- 8. Manager API Routes ---
 
 // 8.1. Manager: Get Pickups assigned (No changes)
