@@ -1011,8 +1011,9 @@ if (full.data.payload.parts) {
   ).toString("utf-8");
 }
 
-    const parsed = parseMargmartEmail(body);
     const cleanText = body.replace(/<[^>]*>/g, ' ');
+const parsed = parseMargmartEmail(cleanText);
+
     
     if (!parsed?.orderNumber || !parsed?.address) {
   console.log("⚠️ Email parsed but required fields missing");
@@ -1468,3 +1469,4 @@ async function initialSetup() {
     catch (e) { console.error('Default settings check/create error:', e); }
 }
 setTimeout(initialSetup, 5000);
+
