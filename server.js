@@ -68,6 +68,21 @@ function getISTTime() {
   });
 }
 
+function extractPincode(address='') {
+  const m = address.match(/\b\d{6}\b/);
+  return m ? m[0] : null;
+}
+
+function parseMargmartEmail(body) {
+  return {
+    orderNumber: body.match(/Order Number\s*:\s*(.+)/i)?.[1]?.trim(),
+    customerName: body.match(/Customer's Name\s*:\s*(.+)/i)?.[1]?.trim(),
+    phone: body.match(/Contact\s*:\s*(\d+)/i)?.[1]?.trim(),
+    address: body.match(/Shipping Address\s*:\s*(.+)/i)?.[1]?.trim(),
+    amount: Number(body.match(/Total Amount\s*:\s*([\d.]+)/i)?.[1]),
+  };
+}
+
 // --- 1. Environment Variables ---
 const MONGO_URI = process.env.MONGO_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -350,6 +365,23 @@ async function syncSingleDeliveryToSheet(deliveryId, action = 'update') {
         console.error(`Auto-sync Error for ${deliveryId}:`, sheetError.message);
     }
 }
+
+// 4.6 DraftOrder Schema (ADD THIS)
+const draftOrderSchema = new mongoose.Schema({
+  source: { type: String, default: 'margmart' },
+  orderNumber: { type: String, unique: true, required: true },
+  customerName: String,
+  phone: String,
+  address: String,
+  pincode: String,
+  amount: Number,
+  paymentMethod: { type: String, default: 'Prepaid' },
+  status: { type: String, enum: ['DRAFT','SENT','CONVERTED','SKIPPED'], default: 'DRAFT' },
+  rawEmailId: String
+}, { timestamps: true });
+
+const DraftOrder = mongoose.model('DraftOrder', draftOrderSchema);
+
 
 // --- 5. Auth APIs --- (No changes)
 // 5.1. Login
@@ -908,6 +940,25 @@ app.get('/manager/all-pending-deliveries', auth(['manager']), async (req, res) =
     res.json(deliveries);
   } catch (err) {
     res.status(500).json({ message: 'Failed to load pending deliveries' });
+  }
+});
+
+// --- 7.12 Draft Orders API Routes ---
+// 📬 Get Draft Orders
+app.get('/api/drafts', auth(['admin']), async (req, res) => {
+  const drafts = await DraftOrder.find({ status: 'DRAFT' }).sort({ createdAt: -1 });
+  res.json(drafts);
+});
+
+// --- 7.13 Create Draft Order ---
+// 📩 Fetch Margmart Orders from Email (MANUAL TRIGGER)
+app.post('/api/fetch-margmart-orders', auth(['admin']), async (req, res) => {
+  try {
+    await fetchMargmartEmails();
+    res.json({ message: 'Margmart emails fetched successfully' });
+  } catch (err) {
+    console.error('Email fetch error:', err);
+    res.status(500).json({ message: 'Failed to fetch emails' });
   }
 });
 
