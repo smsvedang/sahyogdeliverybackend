@@ -10,7 +10,6 @@ import jwt from 'jsonwebtoken';
 import { google } from 'googleapis';
 import cron from 'node-cron';
 import { fileURLToPath } from 'url';
-import path from 'path';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1053,9 +1052,6 @@ await DraftOrder.create({
   rawEmailId: msg.id
 });
 
-console.log(`📨 Draft created for order ${parsed.orderNumber}`);
-  }
-}
 // ✅ mark email as processed
 await gmail.users.messages.modify({
   userId: 'me',
@@ -1063,7 +1059,11 @@ await gmail.users.messages.modify({
   requestBody: {
     removeLabelIds: ['UNREAD']
   }
-});
+  });
+console.log(`📨 Draft created for order ${parsed.orderNumber}`);
+  }
+}
+
 
 // 🔁 Auto fetch Margmart emails every 5 minutes
 cron.schedule("*/5 * * * *", async () => {
