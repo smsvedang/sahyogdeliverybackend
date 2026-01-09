@@ -461,8 +461,6 @@ if (req.body.draftId) {
     req.body.draftId,
     { status: 'CONVERTED' }
   );
-  document.getElementById("draftId").value = "";
-loadDrafts(); // refresh draft list
 }
 
         // --- AUTO-SYNC (CREATE) ---
@@ -1598,3 +1596,4 @@ async function initialSetup() {
     catch (e) { console.error('Default settings check/create error:', e); }
 }
 setTimeout(initialSetup, 5000);
+
