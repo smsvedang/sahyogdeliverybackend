@@ -518,8 +518,6 @@ Tracking ID: ${trackingId} | ${getISTTime()}`,
 
 
         res.status(201).json({ message: 'Courier booked successfully!', trackingId: trackingId, otp: otp });
-document.getElementById("draftId").value = "";
-loadDrafts(); // 🔄 UI se draft hataane ke liye
     } catch (error) {
          console.error("Booking Error:", error);
          if (error.name === 'ValidationError') {
@@ -1637,3 +1635,4 @@ async function initialSetup() {
     catch (e) { console.error('Default settings check/create error:', e); }
 }
 setTimeout(initialSetup, 5000);
+
