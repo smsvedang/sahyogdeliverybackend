@@ -14,8 +14,32 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
-app.use(cors());
 app.use(express.json());
+
+const allowedOrigins = [
+  "https://sahyogdelivery.vercel.app",
+  "http://localhost:3000",
+  "http://localhost:5500"
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // Postman / server-side / cron ke liye
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true
+}));
+
+// 🔥 VERY IMPORTANT
+app.options("*", cors());
 
 import admin from 'firebase-admin';
 admin.initializeApp({
