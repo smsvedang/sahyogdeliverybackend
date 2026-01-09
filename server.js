@@ -455,6 +455,16 @@ app.post('/book', auth(['admin']), async (req, res) => {
         });
         await newDelivery.save();
         
+        // 🔥 DRAFT CONVERT FIX (EXACT PLACE)
+if (req.body.draftId) {
+  await DraftOrder.findByIdAndUpdate(
+    req.body.draftId,
+    { status: 'CONVERTED' }
+  );
+  document.getElementById("draftId").value = "";
+loadDrafts(); // refresh draft list
+}
+
         // --- AUTO-SYNC (CREATE) ---
         syncSingleDeliveryToSheet(newDelivery._id, 'create').catch(console.error);
 
