@@ -986,6 +986,21 @@ app.get('/api/drafts', auth(['admin']), async (req, res) => {
   res.json(drafts);
 });
 
+// DELETE Draft
+// DELETE Draft Order
+app.delete('/api/drafts/:id', auth(['admin']), async (req, res) => {
+  try {
+    const draft = await DraftOrder.findByIdAndDelete(req.params.id);
+    if (!draft) {
+      return res.status(404).json({ message: "Draft not found" });
+    }
+    res.json({ message: "Draft deleted successfully" });
+  } catch (err) {
+    console.error("Delete Draft Error:", err);
+    res.status(500).json({ message: "Failed to delete draft" });
+  }
+});
+
 // --- 7.13 Create Draft Order ---
 // 📩 Fetch Margmart Orders from Email (MANUAL TRIGGER)
 app.post('/api/fetch-margmart-orders', auth(['admin']), async (req, res) => {
