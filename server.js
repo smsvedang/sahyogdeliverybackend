@@ -1635,4 +1635,3 @@ async function initialSetup() {
     catch (e) { console.error('Default settings check/create error:', e); }
 }
 setTimeout(initialSetup, 5000);
-
