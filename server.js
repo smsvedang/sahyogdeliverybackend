@@ -1596,7 +1596,7 @@ app.get('/delivery/my-deliveries', auth(['delivery']), async (req, res) => {
         }
       }
     })
-      .select("trackingId billAmount customerPhone customerName statusUpdates paymentMethod codPaymentStatus assignedTo")
+      .select("trackingId billAmount customerPhone customerName customerAddress statusUpdates paymentMethod codPaymentStatus assignedTo")
       .sort({ createdAt: -1 });
 
     res.json({ deliveries: deliveries || [] });
