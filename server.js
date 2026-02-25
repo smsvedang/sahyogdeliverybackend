@@ -119,6 +119,12 @@ const CASHFREE_APP_ID = process.env.CASHFREE_APP_ID;
 const CASHFREE_SECRET_KEY = process.env.CASHFREE_SECRET_KEY;
 const CASHFREE_BASE_URL = process.env.CASHFREE_BASE_URL || 'https://sandbox.cashfree.com/pg';
 
+// --- Verification of Critical Environment Variables ---
+if (!CASHFREE_APP_ID || !CASHFREE_SECRET_KEY) {
+  console.warn("⚠️ WARNING: CASHFREE_APP_ID or CASHFREE_SECRET_KEY is missing. Payment features will fail.");
+}
+
+
 
 if (!MONGO_URI || !JWT_SECRET || !VAPID_PUBLIC_KEY) {
   console.error('FATAL ERROR: Environment Variables are not set.');
@@ -1760,8 +1766,10 @@ app.get("/api/payment-success", (req, res) => {
   res.send("Cashfree webhook route working");
 });
 
-// --- 11.3. Cashfree Create Order (Dynamic QR) ---
+// --- 11.3 Cashfree Create Order ---
+// Refined POST route for creating payments
 app.post("/api/create-cashfree-order", async (req, res) => {
+  console.log("📝 create-cashfree-order hit:", req.body);
   try {
     const { trackingId, amount, phone } = req.body;
 
@@ -1769,10 +1777,15 @@ app.post("/api/create-cashfree-order", async (req, res) => {
       return res.status(400).json({ success: false, message: "Tracking ID is required" });
     }
 
+    // Check if trackingId is in the DB
     const delivery = await Delivery.findOne({ trackingId });
 
     if (!delivery) {
-      return res.status(404).json({ success: false, message: "Delivery not found" });
+      console.warn("⚠️ Order not found in DB for trackingId:", trackingId);
+      return res.status(404).json({
+        success: false,
+        message: `Order ${trackingId} not found. Please check the tracking ID.`
+      });
     }
 
     // Reject if already paid
@@ -1782,7 +1795,7 @@ app.post("/api/create-cashfree-order", async (req, res) => {
 
     const orderAmount = amount || delivery.billAmount || 0;
     if (orderAmount <= 0) {
-      return res.status(400).json({ success: false, message: "Invalid bill amount" });
+      return res.status(400).json({ success: false, message: "Bill amount must be greater than zero" });
     }
 
     // Cashfree Order Creation (API Version 2025-01-01)
@@ -1809,18 +1822,18 @@ app.post("/api/create-cashfree-order", async (req, res) => {
       })
     };
 
+    console.log("🔗 Calling Cashfree API...");
     const cfResponse = await fetch(`${CASHFREE_BASE_URL}/orders`, options);
     const cfData = await cfResponse.json();
 
     if (!cfResponse.ok) {
-      console.error("Cashfree API Error:", cfData);
+      console.error("❌ Cashfree API Error:", cfData);
       return res.status(cfResponse.status).json({ success: false, message: "Cashfree order creation failed", error: cfData });
     }
 
-    // In 2025-01-01, the payment link is usually order_url or built from order_id
-    // But most Hosted Checkout integrations return it in the response
     const paymentLink = cfData.payment_link || cfData.order_url || `https://payments.cashfree.com/order/${cfData.order_id}`;
 
+    console.log("✅ Order created successfully:", cfData.order_id);
     res.json({
       success: true,
       payment_link: paymentLink,
@@ -1828,28 +1841,33 @@ app.post("/api/create-cashfree-order", async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Create Order Error:", error);
-    res.status(500).json({ success: false, message: "Server error during payment initialization" });
+    console.error("🔥 Server Error during order creation:", error);
+    res.status(500).json({ success: false, message: "Server error during payment initialization", error: error.message });
   }
 });
 
-// --- 11.4. Check Payment Status (Polling) ---
+// --- 11.4 Payment Status Helper (Polling) ---
 app.get("/api/check-payment/:trackingId", async (req, res) => {
   try {
     const { trackingId } = req.params;
     const delivery = await Delivery.findOne({ trackingId });
 
     if (!delivery) {
-      return res.status(404).json({ message: "Delivery not found" });
+      return res.status(404).json({ success: false, message: "Delivery not found" });
     }
 
     res.json({
-      status: delivery.codPaymentStatus // 'Pending' | 'Paid - Online' | etc.
+      success: true,
+      status: delivery.codPaymentStatus || 'Pending',
+      trackingId: delivery.trackingId
     });
   } catch (error) {
-    res.status(500).json({ message: "Server error checking status" });
+    console.error("Check status error:", error);
+    res.status(500).json({ success: false, message: "Server error checking status" });
   }
 });
+
+
 
 // --- 12. Start Server ---
 const PORT = process.env.PORT || 10000;
