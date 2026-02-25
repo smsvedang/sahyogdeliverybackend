@@ -1706,18 +1706,6 @@ app.put('/admin/settings', auth(['admin']), async (req, res) => {
 });
 
 // --- 11.1. Clear all FCM tokens (Admin Only) ---
-app.post('/clear-fcm-tokens', auth(['admin']), async (req, res) => {
-  await User.updateMany({}, { $set: { fcmTokens: [] } });
-  res.json({ message: "All tokens cleared." });
-});
-
-// --- 12. Start Server --- (No changes)
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`सर्वर ${PORT} पर चल रहा है`));
-
-// --- 13. Create Admin User & Default Settings (one-time) --- (No changes)
-async function initialSetup() {
-    // Admin User
     try { const adminEmail = 'sahyogmns', adminPass = 'passsahyogmns'; let admin = await User.findOne({ email: adminEmail });
         if (!admin) { const hp = await bcrypt.hash(adminPass, 12); admin = new User({ name: 'Sahyog Admin', email: adminEmail, password: hp, role: 'admin', isActive: true }); await admin.save(); console.log(`--- ADMIN CREATED --- User: ${adminEmail}, Pass: ${adminPass}`); }
         else { if (!admin.isActive) { admin.isActive = true; await admin.save(); console.log(`Admin ${adminEmail} reactivated.`); } else { console.log('Admin exists & active.'); } }
