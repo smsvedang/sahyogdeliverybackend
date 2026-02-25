@@ -1980,6 +1980,57 @@ app.post("/api/create-cashfree-order", async (req, res) => {
   }
 });
 
+// --- 11.3b Cashfree Create Order (For COD/QR) ---
+app.post("/api/cod/create-cashfree-order", async (req, res) => {
+  console.log("📝 cod/create-cashfree-order hit:", req.body);
+  try {
+    const { trackingId, amount, customerPhone } = req.body;
+
+    if (!trackingId || !amount || !customerPhone) {
+      return res.status(400).json({ success: false, message: "Missing required fields: trackingId, amount, customerPhone" });
+    }
+
+    const options = {
+      method: 'POST',
+      headers: {
+        'accept': 'application/json',
+        'x-client-id': CASHFREE_APP_ID,
+        'x-client-secret': CASHFREE_SECRET_KEY,
+        'x-api-version': '2022-09-01',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        order_id: trackingId,
+        order_amount: amount,
+        order_currency: 'INR',
+        customer_details: {
+          customer_id: trackingId,
+          customer_phone: customerPhone
+        }
+      })
+    };
+
+    console.log("🔗 Calling Cashfree API (2022-09-01)...");
+    const cfResponse = await fetch(`${CASHFREE_BASE_URL}/orders`, options);
+    const cfData = await cfResponse.json();
+
+    if (!cfResponse.ok) {
+      console.error("❌ Cashfree API Error:", cfData);
+      return res.status(cfResponse.status).json({ success: false, message: "Cashfree order creation failed", error: cfData });
+    }
+
+    res.json({
+      success: true,
+      sessionId: cfData.payment_session_id
+    });
+
+  } catch (error) {
+    console.error("🔥 Server Error during COD order creation:", error);
+    res.status(500).json({ success: false, message: "Server error during COD order creation", error: error.message });
+  }
+});
+
+
 // --- 11.4 Payment Status Helper (Polling) ---
 app.get("/api/check-payment/:trackingId", async (req, res) => {
   try {
