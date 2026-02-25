@@ -1761,7 +1761,7 @@ app.get("/api/payment-success", (req, res) => {
 });
 
 // --- 11.3. Cashfree Create Order (Dynamic QR) ---
-app.post("/api/create-cashfree-order", auth(['delivery', 'admin', 'manager']), async (req, res) => {
+app.post("/api/create-cashfree-order", async (req, res) => {
   try {
     const { trackingId, amount, phone } = req.body;
 
