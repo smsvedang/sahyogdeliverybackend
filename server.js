@@ -1590,9 +1590,20 @@ app.get('/delivery/my-deliveries', auth(['delivery']), async (req, res) => {
     const filter = { assignedTo: req.user.userId, 'statusUpdates.status': { $nin: ['Delivered', 'Cancelled'] } };
     const deliveries = await Delivery.find(filter).sort({ createdAt: 1 }).skip(skip).limit(limit);
     const totalDeliveries = await Delivery.countDocuments(filter);
-    res.json({ deliveries, currentPage: page, totalPages: Math.ceil(totalDeliveries / limit), totalDeliveries });
+
+    // Map deliveries to include customerPhone explicitly if it's not already in the toJSON output properly
+    const sanitizedDeliveries = deliveries.map(d => {
+      const obj = d.toObject ? d.toObject({ virtuals: true }) : d;
+      return {
+        ...obj,
+        customerPhone: d.customerPhone || 'N/A'
+      };
+    });
+
+    res.json({ deliveries: sanitizedDeliveries, currentPage: page, totalPages: Math.ceil(totalDeliveries / limit), totalDeliveries });
   } catch (error) { console.error("Fetch Assigned Error:", error); res.status(500).json({ message: 'Error fetching assigned deliveries' }); }
 });
+
 
 // 9.2. Update Status (Scan/Manual)
 app.post('/delivery/update-status', auth(['delivery']), async (req, res) => {
