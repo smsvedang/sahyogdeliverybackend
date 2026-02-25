@@ -1814,13 +1814,13 @@ app.post("/api/cod/create-payment-session", async (req, res) => {
       return res.status(400).json({ success: false, message: "Bill amount must be greater than zero" });
     }
 
-    // Call Cashfree Order API (Version 2022-09-01)
+    // Call Cashfree Order API (Version 2025-01-01)
     const options = {
       method: 'POST',
       headers: {
         'x-client-id': CASHFREE_APP_ID,
         'x-client-secret': CASHFREE_SECRET_KEY,
-        'x-api-version': '2022-09-01',
+        'x-api-version': '2025-01-01',
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
@@ -1837,7 +1837,7 @@ app.post("/api/cod/create-payment-session", async (req, res) => {
       })
     };
 
-    console.log("🔗 Calling Cashfree API (2022-09-01)...");
+    console.log("🔗 Calling Cashfree API (2025-01-01)...");
     const cfResponse = await fetch(`${CASHFREE_BASE_URL}/orders`, options);
     const cfData = await cfResponse.json();
 
@@ -1882,7 +1882,7 @@ app.get("/api/cod/check-payment/:orderId", async (req, res) => {
       headers: {
         'x-client-id': CASHFREE_APP_ID,
         'x-client-secret': CASHFREE_SECRET_KEY,
-        'x-api-version': '2022-09-01'
+        'x-api-version': '2025-01-01'
       }
     };
 
@@ -2025,7 +2025,7 @@ app.post("/api/cod/create-cashfree-order", async (req, res) => {
         'accept': 'application/json',
         'x-client-id': CASHFREE_APP_ID,
         'x-client-secret': CASHFREE_SECRET_KEY,
-        'x-api-version': '2022-09-01',
+        'x-api-version': '2025-01-01',
         'content-type': 'application/json'
       },
       body: JSON.stringify({
@@ -2039,7 +2039,7 @@ app.post("/api/cod/create-cashfree-order", async (req, res) => {
       })
     };
 
-    console.log("🔗 Calling Cashfree API (2022-09-01)...");
+    console.log("🔗 Calling Cashfree API (2025-01-01)...");
     const cfResponse = await fetch(`${CASHFREE_BASE_URL}/orders`, options);
     const cfData = await cfResponse.json();
 
