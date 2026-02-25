@@ -1766,6 +1766,140 @@ app.get("/api/payment-success", (req, res) => {
   res.send("Cashfree webhook route working");
 });
 
+// --- 11.5 NEW Cashfree COD QR Support (PRD FIX) ---
+// 1. Create COD Payment Session
+app.post("/api/cod/create-payment-session", async (req, res) => {
+  console.log("📝 cod/create-payment-session hit:", req.body);
+  try {
+    const { trackingId, amount } = req.body;
+
+    if (!trackingId) {
+      return res.status(400).json({ success: false, message: "Tracking ID is required" });
+    }
+
+    // Check if trackingId is in the DB
+    const delivery = await Delivery.findOne({ trackingId });
+
+    if (!delivery) {
+      console.warn("⚠️ Order not found in DB for trackingId:", trackingId);
+      return res.status(404).json({
+        success: false,
+        message: `Order ${trackingId} not found.`
+      });
+    }
+
+    // Reject if already paid
+    if (delivery.codPaymentStatus === "Paid - Online" || delivery.codPaymentStatus === "Paid - Cash") {
+      return res.status(400).json({ success: false, message: "Payment already completed for this order" });
+    }
+
+    const orderAmount = amount || delivery.billAmount || 0;
+    if (orderAmount <= 0) {
+      return res.status(400).json({ success: false, message: "Bill amount must be greater than zero" });
+    }
+
+    // Call Cashfree Order API (Version 2022-09-01)
+    const options = {
+      method: 'POST',
+      headers: {
+        'x-client-id': CASHFREE_APP_ID,
+        'x-client-secret': CASHFREE_SECRET_KEY,
+        'x-api-version': '2022-09-01',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        order_id: trackingId,
+        order_amount: orderAmount,
+        order_currency: 'INR',
+        customer_details: {
+          customer_id: trackingId,
+          customer_phone: delivery.customerPhone || '9999999999'
+        },
+        order_meta: {
+          return_url: "https://sahyogdelivery.vercel.app/payment-success"
+        }
+      })
+    };
+
+    console.log("🔗 Calling Cashfree API (2022-09-01)...");
+    const cfResponse = await fetch(`${CASHFREE_BASE_URL}/orders`, options);
+    const cfData = await cfResponse.json();
+
+    if (!cfResponse.ok) {
+      console.error("❌ Cashfree API Error:", cfData);
+      return res.status(cfResponse.status).json({ success: false, message: "Cashfree order creation failed", error: cfData });
+    }
+
+    const { payment_session_id, order_id } = cfData;
+
+    // Fetch BusinessSettings for UPI ID and Name
+    const settings = await BusinessSettings.findOne();
+    const upiId = settings?.upiId || "";
+    const upiName = settings?.upiName || "Sahyog Medical";
+
+    // Option B — UPI Intent (Preferred)
+    // upi://pay?pa=UPI_ID&pn=NAME&am=AMOUNT&cu=INR&tn=ORDER_ID
+    const qrLink = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&am=${orderAmount}&cu=INR&tn=${order_id}`;
+
+    console.log("✅ Session created for:", order_id);
+    res.json({
+      success: true,
+      qrLink: qrLink,
+      orderId: order_id,
+      paymentSessionId: payment_session_id
+    });
+
+  } catch (error) {
+    console.error("🔥 Server Error during session creation:", error);
+    res.status(500).json({ success: false, message: "Server error during payment initialization", error: error.message });
+  }
+});
+
+// 2. Create Payment Status API (Polling)
+app.get("/api/cod/check-payment/:orderId", async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    // Call Cashfree Status API
+    const options = {
+      method: 'GET',
+      headers: {
+        'x-client-id': CASHFREE_APP_ID,
+        'x-client-secret': CASHFREE_SECRET_KEY,
+        'x-api-version': '2022-09-01'
+      }
+    };
+
+    const cfResponse = await fetch(`${CASHFREE_BASE_URL}/orders/${orderId}`, options);
+    const cfData = await cfResponse.json();
+
+    if (!cfResponse.ok) {
+      console.error("❌ Check Payment Error:", cfData);
+      return res.status(cfResponse.status).json({ success: false, error: cfData });
+    }
+
+    // If: order_status == PAID
+    if (cfData.order_status === "PAID") {
+      const delivery = await Delivery.findOne({ trackingId: orderId });
+      if (delivery && delivery.codPaymentStatus !== "Paid - Online") {
+        delivery.codPaymentStatus = "Paid - Online";
+        await delivery.save();
+
+        // Auto-Sync to Google Sheet
+        syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
+        console.log("✅ Payment status updated to PAID for:", orderId);
+      }
+      return res.json({ paid: true });
+    }
+
+    res.json({ paid: false, status: cfData.order_status });
+
+  } catch (error) {
+    console.error("🔥 Error checking payment status:", error);
+    res.status(500).json({ success: false, message: "Server error checking status" });
+  }
+});
+
 // --- 11.3 Cashfree Create Order ---
 // Refined POST route for creating payments
 app.post("/api/create-cashfree-order", async (req, res) => {
