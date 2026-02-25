@@ -1760,48 +1760,48 @@ app.get("/api/payment-success", (req, res) => {
   res.send("Cashfree webhook route working");
 });
 
-// --- 11.3. Cashfree Create Order ---
-app.post("/api/payment/create-order", auth(['delivery', 'admin', 'manager']), async (req, res) => {
+// --- 11.3. Cashfree Create Order (Dynamic QR) ---
+app.post("/api/create-cashfree-order", auth(['delivery', 'admin', 'manager']), async (req, res) => {
   try {
-    const { trackingId } = req.body;
+    const { trackingId, amount, phone } = req.body;
 
     if (!trackingId) {
-      return res.status(400).json({ message: "Tracking ID is required" });
+      return res.status(400).json({ success: false, message: "Tracking ID is required" });
     }
 
     const delivery = await Delivery.findOne({ trackingId });
 
     if (!delivery) {
-      return res.status(404).json({ message: "Delivery not found" });
+      return res.status(404).json({ success: false, message: "Delivery not found" });
     }
 
-    // ⚠️ Important Rule: Check if already paid
+    // Reject if already paid
     if (delivery.codPaymentStatus === "Paid - Online" || delivery.codPaymentStatus === "Paid - Cash") {
-      return res.status(400).json({ message: "Payment already completed for this order" });
+      return res.status(400).json({ success: false, message: "Payment already completed for this order" });
     }
 
-    const amount = delivery.billAmount || 0;
-    if (amount <= 0) {
-      return res.status(400).json({ message: "Invalid bill amount" });
+    const orderAmount = amount || delivery.billAmount || 0;
+    if (orderAmount <= 0) {
+      return res.status(400).json({ success: false, message: "Invalid bill amount" });
     }
 
-    // Cashfree Order Creation (Using Fetch)
+    // Cashfree Order Creation (API Version 2025-01-01)
     const options = {
       method: 'POST',
       headers: {
         accept: 'application/json',
         'x-client-id': CASHFREE_APP_ID,
         'x-client-secret': CASHFREE_SECRET_KEY,
-        'x-api-version': '2023-08-01',
+        'x-api-version': '2025-01-01',
         'content-type': 'application/json'
       },
       body: JSON.stringify({
-        order_amount: amount,
-        order_currency: 'INR',
         order_id: trackingId,
+        order_amount: orderAmount,
+        order_currency: 'INR',
         customer_details: {
           customer_id: trackingId,
-          customer_phone: delivery.customerPhone || '9999999999'
+          customer_phone: phone || delivery.customerPhone || '9999999999'
         },
         order_meta: {
           notify_url: "https://sahyogdeliverybackend.onrender.com/api/payment-success"
@@ -1809,23 +1809,45 @@ app.post("/api/payment/create-order", auth(['delivery', 'admin', 'manager']), as
       })
     };
 
-    console.log(`Creating Cashfree order for ${trackingId} at ${CASHFREE_BASE_URL}/orders`);
     const cfResponse = await fetch(`${CASHFREE_BASE_URL}/orders`, options);
     const cfData = await cfResponse.json();
 
     if (!cfResponse.ok) {
       console.error("Cashfree API Error:", cfData);
-      return res.status(cfResponse.status).json({ message: "Cashfree order creation failed", error: cfData });
+      return res.status(cfResponse.status).json({ success: false, message: "Cashfree order creation failed", error: cfData });
     }
 
+    // In 2025-01-01, the payment link is usually order_url or built from order_id
+    // But most Hosted Checkout integrations return it in the response
+    const paymentLink = cfData.payment_link || cfData.order_url || `https://payments.cashfree.com/order/${cfData.order_id}`;
+
     res.json({
-      payment_session_id: cfData.payment_session_id,
+      success: true,
+      payment_link: paymentLink,
       order_id: cfData.order_id
     });
 
   } catch (error) {
     console.error("Create Order Error:", error);
-    res.status(500).json({ message: "Server error during payment initialization" });
+    res.status(500).json({ success: false, message: "Server error during payment initialization" });
+  }
+});
+
+// --- 11.4. Check Payment Status (Polling) ---
+app.get("/api/check-payment/:trackingId", async (req, res) => {
+  try {
+    const { trackingId } = req.params;
+    const delivery = await Delivery.findOne({ trackingId });
+
+    if (!delivery) {
+      return res.status(404).json({ message: "Delivery not found" });
+    }
+
+    res.json({
+      status: delivery.codPaymentStatus // 'Pending' | 'Paid - Online' | etc.
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Server error checking status" });
   }
 });
 
