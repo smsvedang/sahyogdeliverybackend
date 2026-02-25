@@ -2050,8 +2050,10 @@ app.post("/api/cod/create-cashfree-order", async (req, res) => {
 
     res.json({
       success: true,
-      sessionId: cfData.payment_session_id
+      sessionId: cfData.payment_session_id,
+      orderId: trackingId
     });
+
 
   } catch (error) {
     console.error("🔥 Server Error during COD order creation:", error);
