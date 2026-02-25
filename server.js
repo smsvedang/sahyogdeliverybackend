@@ -115,6 +115,9 @@ function parseMargmartEmail(body) {
 const MONGO_URI = process.env.MONGO_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
 const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
+const CASHFREE_APP_ID = process.env.CASHFREE_APP_ID;
+const CASHFREE_SECRET_KEY = process.env.CASHFREE_SECRET_KEY;
+const CASHFREE_BASE_URL = process.env.CASHFREE_BASE_URL || 'https://sandbox.cashfree.com/pg';
 
 
 if (!MONGO_URI || !JWT_SECRET || !VAPID_PUBLIC_KEY) {
@@ -1721,18 +1724,109 @@ app.post('/clear-fcm-tokens', auth(['admin']), async (req, res) => {
 app.post("/api/payment-success", async (req, res) => {
   try {
     console.log("💰 Cashfree Webhook Received");
-    console.log(JSON.stringify(req.body, null, 2));
+    const eventType = req.body?.type;
+
+    if (eventType === "PAYMENT_SUCCESS_WEBHOOK") {
+      const orderId = req.body?.data?.order?.order_id;
+      const paymentStatus = req.body?.data?.payment?.payment_status;
+
+      if (paymentStatus === "SUCCESS" && orderId) {
+        // Find delivery by trackingId (which is used as order_id)
+        const delivery = await Delivery.findOne({ trackingId: orderId });
+
+        if (delivery) {
+          delivery.codPaymentStatus = "Paid - Online";
+          await delivery.save();
+
+          console.log("✅ Payment marked PAID for:", orderId);
+
+          // Auto-Sync to Google Sheet
+          syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
+        } else {
+          console.warn("⚠️ Delivery not found for trackingId:", orderId);
+        }
+      }
+    }
 
     return res.status(200).send("OK");
   } catch (err) {
-    console.error("Webhook Error:", err);
-    return res.status(200).send("OK"); // Always return 200
+    console.error("Webhook error:", err);
+    return res.status(200).send("OK");
   }
 });
 
 // Optional GET check (browser test)
 app.get("/api/payment-success", (req, res) => {
   res.send("Cashfree webhook route working");
+});
+
+// --- 11.3. Cashfree Create Order ---
+app.post("/api/payment/create-order", auth(['delivery', 'admin', 'manager']), async (req, res) => {
+  try {
+    const { trackingId } = req.body;
+
+    if (!trackingId) {
+      return res.status(400).json({ message: "Tracking ID is required" });
+    }
+
+    const delivery = await Delivery.findOne({ trackingId });
+
+    if (!delivery) {
+      return res.status(404).json({ message: "Delivery not found" });
+    }
+
+    // ⚠️ Important Rule: Check if already paid
+    if (delivery.codPaymentStatus === "Paid - Online" || delivery.codPaymentStatus === "Paid - Cash") {
+      return res.status(400).json({ message: "Payment already completed for this order" });
+    }
+
+    const amount = delivery.billAmount || 0;
+    if (amount <= 0) {
+      return res.status(400).json({ message: "Invalid bill amount" });
+    }
+
+    // Cashfree Order Creation (Using Fetch)
+    const options = {
+      method: 'POST',
+      headers: {
+        accept: 'application/json',
+        'x-client-id': CASHFREE_APP_ID,
+        'x-client-secret': CASHFREE_SECRET_KEY,
+        'x-api-version': '2023-08-01',
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        order_amount: amount,
+        order_currency: 'INR',
+        order_id: trackingId,
+        customer_details: {
+          customer_id: trackingId,
+          customer_phone: delivery.customerPhone || '9999999999'
+        },
+        order_meta: {
+          notify_url: "https://sahyogdeliverybackend.onrender.com/api/payment-success"
+        }
+      })
+    };
+
+    console.log(`Creating Cashfree order for ${trackingId} at ${CASHFREE_BASE_URL}/orders`);
+    const cfResponse = await fetch(`${CASHFREE_BASE_URL}/orders`, options);
+    const cfData = await cfResponse.json();
+
+    if (!cfResponse.ok) {
+      console.error("Cashfree API Error:", cfData);
+      return res.status(cfResponse.status).json({ message: "Cashfree order creation failed", error: cfData });
+    }
+
+    res.json({
+      payment_session_id: cfData.payment_session_id,
+      order_id: cfData.order_id
+    });
+
+  } catch (error) {
+    console.error("Create Order Error:", error);
+    res.status(500).json({ message: "Server error during payment initialization" });
+  }
 });
 
 // --- 12. Start Server ---
