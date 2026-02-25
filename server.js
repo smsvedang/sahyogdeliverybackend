@@ -1586,23 +1586,17 @@ app.post('/manager/reassign-delivery/:deliveryId', auth(['manager']), async (req
 // 9.1. Get Assigned Deliveries (No changes)
 app.get('/delivery/my-deliveries', auth(['delivery']), async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1; const limit = 5; const skip = (page - 1) * limit;
-    const filter = { assignedTo: req.user.userId, 'statusUpdates.status': { $nin: ['Delivered', 'Cancelled'] } };
-    const deliveries = await Delivery.find(filter).sort({ createdAt: 1 }).skip(skip).limit(limit);
-    const totalDeliveries = await Delivery.countDocuments(filter);
+    const deliveries = await Delivery.find({ assignedTo: req.user.userId })
+      .select("trackingId billAmount customerPhone customerName statusUpdates paymentMethod codPaymentStatus")
+      .sort({ createdAt: -1 });
 
-    // Map deliveries to include customerPhone explicitly if it's not already in the toJSON output properly
-    const sanitizedDeliveries = deliveries.map(d => {
-      const obj = d.toObject ? d.toObject({ virtuals: true }) : d;
-      return {
-        ...obj,
-        customerPhone: d.customerPhone || 'N/A'
-      };
-    });
-
-    res.json({ deliveries: sanitizedDeliveries, currentPage: page, totalPages: Math.ceil(totalDeliveries / limit), totalDeliveries });
-  } catch (error) { console.error("Fetch Assigned Error:", error); res.status(500).json({ message: 'Error fetching assigned deliveries' }); }
+    res.json({ deliveries });
+  } catch (error) {
+    console.error("Fetch Assigned Error:", error);
+    res.status(500).json({ message: 'Error fetching assigned deliveries' });
+  }
 });
+
 
 
 // 9.2. Update Status (Scan/Manual)
