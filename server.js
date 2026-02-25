@@ -2000,10 +2000,23 @@ app.post("/api/create-cashfree-order", async (req, res) => {
 app.post("/api/cod/create-cashfree-order", async (req, res) => {
   console.log("📝 cod/create-cashfree-order hit:", req.body);
   try {
-    const { trackingId, amount, customerPhone } = req.body;
+    let { trackingId, amount, customerPhone } = req.body;
 
-    if (!trackingId || !amount || !customerPhone) {
-      return res.status(400).json({ success: false, message: "Missing required fields: trackingId, amount, customerPhone" });
+    if (!trackingId || !amount) {
+      return res.status(400).json({ success: false, message: "Missing required fields: trackingId, amount" });
+    }
+
+    // Try to find the phone if it's missing in the request
+    if (!customerPhone) {
+      const delivery = await Delivery.findOne({ trackingId });
+      if (delivery && delivery.customerPhone) {
+        customerPhone = delivery.customerPhone;
+        console.log(`📱 Found phone from DB: ${customerPhone}`);
+      }
+    }
+
+    if (!customerPhone) {
+      return res.status(400).json({ success: false, message: "customerPhone is required and could not be found in the database." });
     }
 
     const options = {
