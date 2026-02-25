@@ -1720,15 +1720,19 @@ app.post('/clear-fcm-tokens', auth(['admin']), async (req, res) => {
 // --- 11.2. Cashfree Webhook ---
 app.post("/api/payment-success", async (req, res) => {
   try {
-    console.log("Cashfree Webhook Received:");
+    console.log("💰 Cashfree Webhook Received");
     console.log(JSON.stringify(req.body, null, 2));
 
-    // For now only acknowledge webhook
     return res.status(200).send("OK");
-  } catch (error) {
-    console.error("Webhook Error:", error);
-    return res.status(200).send("OK"); // Always return 200 for Cashfree
+  } catch (err) {
+    console.error("Webhook Error:", err);
+    return res.status(200).send("OK"); // Always return 200
   }
+});
+
+// Optional GET check (browser test)
+app.get("/api/payment-success", (req, res) => {
+  res.send("Cashfree webhook route working");
 });
 
 // --- 12. Start Server ---
