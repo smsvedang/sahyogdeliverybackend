@@ -1586,18 +1586,29 @@ app.post('/manager/reassign-delivery/:deliveryId', auth(['manager']), async (req
 // 9.1. Get Assigned Deliveries (No changes)
 app.get('/delivery/my-deliveries', auth(['delivery']), async (req, res) => {
   try {
-    const deliveries = await Delivery.find({ assignedTo: req.user.userId })
-      .select("trackingId billAmount customerPhone customerName statusUpdates paymentMethod codPaymentStatus")
+    const deliveries = await Delivery.find({
+      assignedTo: req.user.userId,
+
+      // ❌ Completed deliveries hide
+      statusUpdates: {
+        $not: {
+          $elemMatch: { status: "Delivered" }
+        }
+      }
+    })
+      .select("trackingId billAmount customerPhone customerName statusUpdates paymentMethod codPaymentStatus assignedTo")
       .sort({ createdAt: -1 });
 
-    res.json({ deliveries });
+    res.json({ deliveries: deliveries || [] });
+
   } catch (error) {
     console.error("Fetch Assigned Error:", error);
-    res.status(500).json({ message: 'Error fetching assigned deliveries' });
+    res.status(500).json({
+      success: false,
+      message: "Error fetching assigned deliveries"
+    });
   }
 });
-
-
 
 // 9.2. Update Status (Scan/Manual)
 app.post('/delivery/update-status', auth(['delivery']), async (req, res) => {
