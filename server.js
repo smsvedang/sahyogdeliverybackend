@@ -1900,57 +1900,59 @@ app.get("/api/payment-status/:trackingId", auth(['delivery', 'admin', 'manager']
 //webhook 
 import crypto from "crypto";
 
-app.post("/api/cashfree-webhook", express.raw({ type: "application/json" }), async (req, res) => {
-  try {
-    const signature =
-      req.headers["x-webhook-signature"] ||
-      req.headers["x-cf-signature"];
+app.post("/api/cashfree-webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    try {
+      const signature =
+        req.headers["x-webhook-signature"] ||
+        req.headers["x-cf-signature"];
 
-    if (!signature) {
-      console.log("❌ No signature header");
-      return res.sendStatus(400);
-    }
+      if (!signature) {
+        console.log("❌ No signature header");
+        return res.sendStatus(400);
+      }
 
-    const expectedSignature = crypto
-      .createHmac("sha256", process.env.CASHFREE_SECRET_KEY)
-      .update(req.body)     // ⚠️ use req.body directly (buffer)
-      .digest("base64");
+      const expectedSignature = crypto
+        .createHmac("sha256", process.env.CASHFREE_SECRET_KEY)
+        .update(req.body)     // ⚠️ use req.body directly (buffer)
+        .digest("base64");
 
-    if (signature !== expectedSignature) {
-      console.log("❌ Invalid webhook signature");
-      console.log("Received:", signature);
-      console.log("Expected:", expectedSignature);
-      return res.sendStatus(400);
-    }
+      if (signature !== expectedSignature) {
+        console.log("❌ Invalid webhook signature");
+        console.log("Received:", signature);
+        console.log("Expected:", expectedSignature);
+        return res.sendStatus(400);
+      }
 
-    // Convert buffer to JSON AFTER signature verify
-    const event = JSON.parse(req.body.toString());
+      // Convert buffer to JSON AFTER signature verify
+      const event = JSON.parse(req.body.toString());
 
-    if (event.type !== "PAYMENT_SUCCESS_WEBHOOK") {
+      if (event.type !== "PAYMENT_SUCCESS_WEBHOOK") {
+        return res.sendStatus(200);
+      }
+
+      const orderId = event.data.order.order_id;
+      const match = orderId.match(/SAHYOG\d+/);
+      const trackingId = match ? match[0] : null;
+
+      if (!trackingId) return res.sendStatus(200);
+
+      const delivery = await Delivery.findOne({ trackingId });
+      if (!delivery) return res.sendStatus(200);
+
+      delivery.codPaymentStatus = "Paid - Online";
+      await delivery.save();
+
+      console.log("✅ Payment marked Paid - Online:", trackingId);
+
       return res.sendStatus(200);
+
+    } catch (err) {
+      console.error("Webhook error:", err);
+      return res.sendStatus(500);
     }
-
-    const orderId = event.data.order.order_id;
-    const match = orderId.match(/SAHYOG\d+/);
-    const trackingId = match ? match[0] : null;
-
-    if (!trackingId) return res.sendStatus(200);
-
-    const delivery = await Delivery.findOne({ trackingId });
-    if (!delivery) return res.sendStatus(200);
-
-    delivery.codPaymentStatus = "Paid - Online";
-    await delivery.save();
-
-    console.log("✅ Payment marked Paid - Online:", trackingId);
-
-    return res.sendStatus(200);
-
-  } catch (err) {
-    console.error("Webhook error:", err);
-    return res.sendStatus(500);
   }
-}
 );
 // --- (NEW) Start Server ---
 
