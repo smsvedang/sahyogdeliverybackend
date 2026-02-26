@@ -21,6 +21,7 @@ const allowedOrigins = [
   "http://localhost:5500"
 ];
 
+app.use(express.json());
 app.use(cors({
   origin: function (origin, callback) {
     // Postman / server-side / cron ke liye
