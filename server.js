@@ -1825,7 +1825,6 @@ app.post("/api/create-payment-order", auth(['delivery', 'admin', 'manager']), as
     res.json({
       success: true,
       sessionId: data.payment_session_id,
-      paymentLink: data.payment_link
     });
 
   } catch (err) {
