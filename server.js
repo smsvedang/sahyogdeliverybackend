@@ -1859,11 +1859,25 @@ app.get("/api/payment-status/:trackingId", auth(['delivery', 'admin', 'manager']
 });
 
 //webhook 
+import crypto from "crypto";
+
 app.post("/api/cashfree-webhook", async (req, res) => {
   try {
+    const signature = req.headers["x-webhook-signature"];
+    const rawBody = JSON.stringify(req.body);
+
+    const expected = crypto
+      .createHmac("sha256", process.env.CASHFREE_SECRET_KEY)
+      .update(rawBody)
+      .digest("base64");
+
+    if (signature !== expected) {
+      console.log("Invalid webhook signature");
+      return res.sendStatus(400);
+    }
+
     const event = req.body;
 
-    // Only success payment
     if (event.type !== "PAYMENT_SUCCESS_WEBHOOK") {
       return res.sendStatus(200);
     }
@@ -1874,18 +1888,22 @@ app.post("/api/cashfree-webhook", async (req, res) => {
     const delivery = await Delivery.findOne({ trackingId });
     if (!delivery) return res.sendStatus(200);
 
-    // Already paid? ignore
     if (delivery.codPaymentStatus === "Paid - Online") {
       return res.sendStatus(200);
     }
 
+    // 💰 Payment update
     delivery.codPaymentStatus = "Paid - Online";
+
+    // 📦 Auto complete delivery
+    delivery.statusUpdates.push({ status: "Delivered" });
+    delivery.completedAt = new Date();
+
     await delivery.save();
 
-    console.log("💰 Payment confirmed:", trackingId);
+    console.log("PAYMENT + DELIVERY AUTO COMPLETED:", trackingId);
 
     res.sendStatus(200);
-
   } catch (err) {
     console.error("Webhook error:", err);
     res.sendStatus(500);
