@@ -1610,32 +1610,49 @@ app.get('/delivery/my-deliveries', auth(['delivery']), async (req, res) => {
   }
 });
 
-// 9.2. Update Status (PRD Compliant)
+// 9.2. Update Status (PRD Compliant + Legacy Support)
 app.post('/delivery/update-status', auth(['delivery']), async (req, res) => {
   try {
-    const { trackingId, status } = req.body;
+    const { trackingId, status: inputStatus } = req.body;
     if (!trackingId) return res.status(400).json({ success: false, message: "trackingId required" });
-
-    // Validate status enum
-    const validStatuses = ['Picked Up', 'Out for Delivery'];
-    if (!status || !validStatuses.includes(status)) {
-      return res.status(400).json({ success: false, message: "Invalid status. Must be 'Picked Up' or 'Out for Delivery'" });
-    }
 
     const delivery = await Delivery.findOne({ trackingId, assignedTo: req.user.userId });
     if (!delivery) return res.status(404).json({ success: false, message: 'Delivery not found or not assigned to you' });
 
     if (['Delivered', 'Cancelled'].includes(delivery.currentStatus)) {
-      return res.status(400).json({ success: false, message: `Already ${delivery.currentStatus}` });
+      return res.status(400).json({ success: false, message: `Delivery is already ${delivery.currentStatus}` });
     }
 
-    delivery.statusUpdates.push({ status, timestamp: new Date() });
+    let finalStatus = inputStatus;
+
+    // If status is not provided by frontend, infer it (Legacy Support)
+    if (!finalStatus) {
+      switch (delivery.currentStatus) {
+        case 'Booked':
+        case 'Boy Assigned':
+          finalStatus = 'Picked Up';
+          break;
+        case 'Picked Up':
+          finalStatus = 'Out for Delivery';
+          break;
+        default:
+          return res.status(400).json({ success: false, message: `Cannot update status from ${delivery.currentStatus}` });
+      }
+    }
+
+    // Validate status (PRD Requirement)
+    const validStatuses = ['Picked Up', 'Out for Delivery'];
+    if (!validStatuses.includes(finalStatus)) {
+      return res.status(400).json({ success: false, message: `Invalid status: ${finalStatus}. Allowed: ${validStatuses.join(', ')}` });
+    }
+
+    delivery.statusUpdates.push({ status: finalStatus, timestamp: new Date() });
     await delivery.save();
 
     // --- AUTO-SYNC (UPDATE) ---
     syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
 
-    res.json({ success: true, message: `Status updated to ${status}`, trackingId, status });
+    res.json({ success: true, message: `Status updated to ${finalStatus}`, trackingId, status: finalStatus });
   } catch (error) {
     console.error("Update Status Error:", error);
     res.status(400).json({ success: false, message: error.message });
@@ -1791,20 +1808,24 @@ app.get("/api/payment-success", (req, res) => res.send("Cashfree webhook route w
 
 // --- 11.5 NEW Cashfree COD QR Support (PRD FIX) ---
 // ===== Cashfree COD Online Payment =====
-import fetch from "node-fetch";
 
 // 1. Payment Order Creation API (PRD Compliant)
 app.post("/api/create-payment-order", auth(['delivery', 'admin', 'manager']), async (req, res) => {
   try {
     const { amount, trackingId } = req.body;
 
-    if (!trackingId || !amount) {
-      return res.status(400).json({ success: false, message: "trackingId and amount are required" });
+    if (!trackingId) {
+      return res.status(400).json({ success: false, message: "trackingId is required" });
     }
 
     const delivery = await Delivery.findOne({ trackingId });
     if (!delivery) {
       return res.status(404).json({ success: false, message: "Delivery not found" });
+    }
+
+    const finalAmount = amount || delivery.billAmount;
+    if (!finalAmount || finalAmount <= 0) {
+      return res.status(400).json({ success: false, message: "Amount is required and must be greater than zero" });
     }
 
     // Validations (PRD Requirement)
@@ -1833,7 +1854,7 @@ app.post("/api/create-payment-order", auth(['delivery', 'admin', 'manager']), as
       },
       body: JSON.stringify({
         order_id: orderId,
-        order_amount: Number(amount),
+        order_amount: Number(finalAmount),
         order_currency: "INR",
         order_note: `Sahyog Delivery: ${trackingId}`,
         customer_details: {
