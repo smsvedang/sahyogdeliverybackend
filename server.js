@@ -1901,6 +1901,20 @@ app.post("/api/cashfree-webhook", async (req, res) => {
 
     await delivery.save();
 
+    // 🔔 Notify Delivery Boy (AUTO REFRESH)
+    const deliveryBoy = await User.findById(delivery.assignedTo);
+
+    if (deliveryBoy?.fcmTokens?.length) {
+      for (const token of deliveryBoy.fcmTokens) {
+        await sendNotification(
+          token,
+          "Payment Done",
+          `Payment received & delivery completed for ${trackingId}`,
+          deliveryBoy._id
+        );
+      }
+    }
+
     console.log("PAYMENT + DELIVERY AUTO COMPLETED:", trackingId);
 
     res.sendStatus(200);
