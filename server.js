@@ -1596,7 +1596,7 @@ app.get('/delivery/my-deliveries', auth(['delivery']), async (req, res) => {
         }
       }
     })
-      .select("trackingId billAmount customerPhone customerName customerAddress statusUpdates paymentMethod codPaymentStatus assignedTo")
+      .select("trackingId billAmount customerPhone customerName customerAddress statusUpdates paymentMethod codPaymentStatus assignedTo currentStatus")
       .sort({ createdAt: -1 });
 
     res.json({ deliveries: deliveries || [] });
@@ -1625,12 +1625,22 @@ app.post('/delivery/update-status', auth(['delivery']), async (req, res) => {
   } catch (error) { console.error("Update Status Error:", error); res.status(500).json({ message: 'Server error updating status', error: error.message }); }
 });
 
-// 9.3. Complete Delivery (OTP)
+// 9.3. Complete Delivery (OTP) - DELIVERY APP ENDPOINT
 app.post('/delivery/complete', auth(['delivery']), async (req, res) => {
   try {
-    const { trackingId, otp, paymentReceivedMethod } = req.body; const delivery = await Delivery.findOne({ trackingId: trackingId, assignedTo: req.user.userId });
-    if (!delivery) return res.status(404).json({ message: 'ID not found/assigned' }); if (delivery.currentStatus !== 'Out for Delivery') return res.status(400).json({ message: `Status is ${delivery.currentStatus}.` }); if (delivery.otp !== otp) return res.status(400).json({ message: 'Invalid OTP!' });
-    if (delivery.paymentMethod === 'COD') { if (!paymentReceivedMethod) return res.status(400).json({ message: 'Select payment method' }); delivery.codPaymentStatus = (paymentReceivedMethod === 'cash') ? 'Paid - Cash' : 'Paid - Online'; } else { delivery.codPaymentStatus = 'Not Applicable'; }
+    const { trackingId, otp, paymentReceivedMethod } = req.body;
+    const delivery = await Delivery.findOne({ trackingId: trackingId, assignedTo: req.user.userId });
+    if (!delivery) return res.status(404).json({ message: 'ID not found/assigned' });
+    if (delivery.currentStatus !== 'Out for Delivery') return res.status(400).json({ message: `Status is ${delivery.currentStatus}.` });
+    if (delivery.otp !== otp) return res.status(400).json({ message: 'Invalid OTP!' });
+
+    if (delivery.paymentMethod === 'COD') {
+      if (!paymentReceivedMethod) return res.status(400).json({ message: 'Select payment method' });
+      delivery.codPaymentStatus = (paymentReceivedMethod === 'cash') ? 'Paid - Cash' : 'Paid - Online';
+    } else {
+      delivery.codPaymentStatus = 'Not Applicable';
+    }
+
     delivery.statusUpdates.push({ status: 'Delivered', timestamp: new Date() });
     delivery.completedAt = new Date();
     await delivery.save();
@@ -1638,42 +1648,56 @@ app.post('/delivery/complete', auth(['delivery']), async (req, res) => {
     // --- AUTO-SYNC (UPDATE) ---
     syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
 
-    // 🔔 FCM PUSH → Manager
-    // 🔔 FCM PUSH → Admins (Delivery Complete)
+    // 🔔 FCM PUSH → Admins
     const admins = await User.find({ role: 'admin', isActive: true });
-
     for (const a of admins) {
       if (a?.fcmTokens?.length) {
-        try {
-          for (const token of a.fcmTokens) {
-            await sendNotification(
-              token,
-              "✅ Delivery Completed",
-              `Ek delivery successfully complete ho gayi hai.
-Tracking ID: ${delivery.trackingId}
-Time: ${getISTTime()}`,
-              a._id,
-              {
-                headers: { Urgency: "high" },
-                icon: "https://sahyogdelivery.vercel.app/favicon.png",
-                badge: "https://sahyogdelivery.vercel.app/favicon.png",
-                tag: `admin-delivery-${delivery.trackingId}`,
-                requireInteraction: true,
-                link: "https://sahyogdelivery.vercel.app/admin.html"
-              }
-            );
-          }
-          console.log(`🔔 FCM SENT → ADMIN (${a.name})`);
-        } catch (err) {
-          console.error(`❌ FCM FAILED → ADMIN (${a.name}):`, err.code, err.message);
+        for (const token of a.fcmTokens) {
+          await sendNotification(
+            token,
+            "✅ Delivery Completed",
+            `Ek delivery successfully complete ho gayi hai.\nTracking ID: ${delivery.trackingId}\nTime: ${getISTTime()}`,
+            a._id,
+            { tag: `admin-delivery-${delivery.trackingId}` }
+          );
         }
-      } else {
-        console.log(`⚠️ ADMIN has no FCM tokens: ${a.name}`);
       }
     }
 
     res.json({ trackingId: delivery.trackingId, status: 'Delivered' });
-  } catch (error) { console.error("Complete Error:", error); res.status(500).json({ message: 'Server error completing delivery', error: error.message }); }
+  } catch (error) {
+    console.error("Complete Error:", error);
+    res.status(500).json({ message: 'Server error completing delivery', error: error.message });
+  }
+});
+
+// 9.4. Update Complete Delivery API Endpoint (PRD Requirement)
+app.post('/api/complete-delivery', auth(['delivery', 'admin', 'manager']), async (req, res) => {
+  try {
+    const { trackingId, otp, paymentType } = req.body; // paymentType = "cash" | "online"
+    const delivery = await Delivery.findOne({ trackingId });
+
+    if (!delivery) return res.status(404).json({ message: "Delivery not found" });
+    if (delivery.otp !== otp) return res.status(400).json({ message: "Invalid OTP" });
+
+    if (paymentType === "cash") {
+      delivery.codPaymentStatus = "Paid - Cash";
+    } else if (paymentType === "online") {
+      delivery.codPaymentStatus = "Paid - Online";
+    }
+
+    delivery.statusUpdates.push({ status: "Delivered", timestamp: new Date() });
+    delivery.completedAt = new Date();
+    await delivery.save();
+
+    // --- AUTO-SYNC (UPDATE) ---
+    syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
+
+    res.json({ success: true, message: "Delivery completed successfully" });
+  } catch (error) {
+    console.error("Complete Delivery API Error:", error);
+    res.status(500).json({ message: "Error completing delivery" });
+  }
 });
 
 // --- 10. Public API Routes --- (No changes)
@@ -1742,45 +1766,9 @@ app.post('/clear-fcm-tokens', auth(['admin']), async (req, res) => {
   res.json({ message: "All tokens cleared." });
 });
 
-// --- 11.2. Cashfree Webhook ---
-app.post("/api/payment-success", async (req, res) => {
-  try {
-    console.log("💰 Cashfree Webhook Received");
-    const eventType = req.body?.type;
-
-    if (eventType === "PAYMENT_SUCCESS_WEBHOOK") {
-      const orderId = req.body?.data?.order?.order_id;
-      const paymentStatus = req.body?.data?.payment?.payment_status;
-
-      if (paymentStatus === "SUCCESS" && orderId) {
-        // Find delivery by trackingId (which is used as order_id)
-        const delivery = await Delivery.findOne({ trackingId: orderId });
-
-        if (delivery) {
-          delivery.codPaymentStatus = "Paid - Online";
-          await delivery.save();
-
-          console.log("✅ Payment marked PAID for:", orderId);
-
-          // Auto-Sync to Google Sheet
-          syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
-        } else {
-          console.warn("⚠️ Delivery not found for trackingId:", orderId);
-        }
-      }
-    }
-
-    return res.status(200).send("OK");
-  } catch (err) {
-    console.error("Webhook error:", err);
-    return res.status(200).send("OK");
-  }
-});
-
-// Optional GET check (browser test)
-app.get("/api/payment-success", (req, res) => {
-  res.send("Cashfree webhook route working");
-});
+// --- 11.2. Cashfree Webhook Route (Deprecated /api/payment-success in favor of /api/cashfree-webhook) ---
+app.post("/api/payment-success", (req, res) => res.redirect(307, "/api/cashfree-webhook"));
+app.get("/api/payment-success", (req, res) => res.send("Cashfree webhook route working. Use /api/cashfree-webhook for POST."));
 
 // --- 11.5 NEW Cashfree COD QR Support (PRD FIX) ---
 // ===== Cashfree COD Online Payment =====
@@ -1792,6 +1780,11 @@ app.post("/api/create-payment-order", auth(['delivery', 'admin', 'manager']), as
     const delivery = await Delivery.findOne({ trackingId });
     if (!delivery) {
       return res.status(404).json({ message: "Delivery not found" });
+    }
+
+    // 🚫 Prevent duplicate payment (PRD Requirement 2)
+    if (delivery.codPaymentStatus !== "Pending") {
+      return res.status(400).json({ message: "Payment already completed" });
     }
     const response = await fetch("https://api.cashfree.com/pg/orders", {
       method: "POST",
@@ -1866,6 +1859,7 @@ import crypto from "crypto";
 app.post("/api/cashfree-webhook", async (req, res) => {
   try {
     const signature = req.headers["x-webhook-signature"];
+    if (!signature) return res.sendStatus(400);
 
     const expected = crypto
       .createHmac("sha256", process.env.CASHFREE_SECRET_KEY)
@@ -1878,47 +1872,52 @@ app.post("/api/cashfree-webhook", async (req, res) => {
     }
 
     const event = req.body;
-
     if (event.type !== "PAYMENT_SUCCESS_WEBHOOK") {
       return res.sendStatus(200);
     }
 
     const orderId = event.data.order.order_id;
+    // Format: COD_<trackingId>_<timestamp>
     const parts = orderId.split("_");
-    const trackingId = parts[1];   // COD_TRACKINGID_TIMESTAMP
+    const trackingId = parts[1];
+
+    if (!trackingId) return res.sendStatus(200);
 
     const delivery = await Delivery.findOne({ trackingId });
     if (!delivery) return res.sendStatus(200);
 
+    // If already Paid → ignore (prevent duplicate)
     if (delivery.codPaymentStatus === "Paid - Online") {
       return res.sendStatus(200);
     }
 
-    // 💰 Payment update
+    // 💰 Update delivery
     delivery.codPaymentStatus = "Paid - Online";
-
-    // 📦 Auto complete delivery
-    delivery.statusUpdates.push({ status: "Delivered" });
+    delivery.statusUpdates.push({ status: "Delivered", timestamp: new Date() });
     delivery.completedAt = new Date();
 
     await delivery.save();
 
-    // 🔔 Notify Delivery Boy (AUTO REFRESH)
-    const deliveryBoy = await User.findById(delivery.assignedTo);
+    // --- AUTO-SYNC (UPDATE) ---
+    syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
 
-    if (deliveryBoy?.fcmTokens?.length) {
-      for (const token of deliveryBoy.fcmTokens) {
-        await sendNotification(
-          token,
-          "Payment Done",
-          `Payment received & delivery completed for ${trackingId}`,
-          deliveryBoy._id
-        );
+    // 🔔 Notify Delivery Boy
+    if (delivery.assignedTo) {
+      const deliveryBoy = await User.findById(delivery.assignedTo);
+      if (deliveryBoy?.fcmTokens?.length) {
+        for (const token of deliveryBoy.fcmTokens) {
+          await sendNotification(
+            token,
+            "💰 Payment Success!",
+            `Order ${trackingId} ke liye online payment mil gaya hai aur delivery auto-complete ho gayi hai.`,
+            deliveryBoy._id,
+            { tag: `payment-success-${trackingId}` }
+          );
+        }
       }
     }
 
-    console.log("PAYMENT + DELIVERY AUTO COMPLETED:", trackingId);
-
+    console.log("✅ CASHFREE WEBHOOK: PAYMENT + DELIVERY AUTO COMPLETED:", trackingId);
     res.sendStatus(200);
   } catch (err) {
     console.error("Webhook error:", err);
@@ -2109,7 +2108,7 @@ app.post("/api/create-cashfree-order", async (req, res) => {
           customer_phone: phone || delivery.customerPhone || '9999999999'
         },
         order_meta: {
-          notify_url: "https://sahyogdeliverybackend.onrender.com/api/payment-success"
+          notify_url: "https://sahyogdeliverybackend.onrender.com/api/cashfree-webhook"
         }
       })
     };
