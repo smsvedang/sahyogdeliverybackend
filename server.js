@@ -1908,6 +1908,8 @@ app.post("/api/cashfree-webhook",
         req.headers["x-webhook-signature"] ||
         req.headers["x-cf-signature"];
 
+      const rawBody = req.body.toString();
+
       if (!signature) {
         console.log("❌ No signature header");
         return res.sendStatus(400);
