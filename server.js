@@ -1900,33 +1900,17 @@ app.get("/api/payment-status/:trackingId", auth(['delivery', 'admin', 'manager']
 //webhook 
 import crypto from "crypto";
 
-const signature = req.headers["x-webhook-signature"];
-
-if (!signature) {
-  console.log("❌ No signature header");
-  return res.sendStatus(400);
-}
-
-const expectedSignature = crypto
-  .createHmac("sha256", process.env.CASHFREE_SECRET_KEY)
-  .update(req.rawBody)     // ⚠️ BUFFER
-  .digest("base64");
-
-if (signature !== expectedSignature) {
-  console.log("❌ Invalid webhook signature");
-  console.log("Received:", signature);
-  console.log("Expected:", expectedSignature);
-  return res.sendStatus(400);
-}
-
 app.post("/api/cashfree-webhook", async (req, res) => {
   try {
     const signature = req.headers["x-webhook-signature"];
-    if (!signature) return res.sendStatus(400);
+    if (!signature) {
+      console.log("❌ No signature");
+      return res.sendStatus(400);
+    }
 
     const expected = crypto
       .createHmac("sha256", process.env.CASHFREE_SECRET_KEY)
-      .update(req.rawBody)
+      .update(req.rawBody)   // BUFFER
       .digest("base64");
 
     if (signature !== expected) {
@@ -1935,56 +1919,31 @@ app.post("/api/cashfree-webhook", async (req, res) => {
     }
 
     const event = req.body;
+
     if (event.type !== "PAYMENT_SUCCESS_WEBHOOK") {
       return res.sendStatus(200);
     }
 
     const orderId = event.data.order.order_id;
-    // Format: COD_<trackingId>_<timestamp>
-    const parts = orderId.split("_");
-    const trackingId = parts[1];
+    const match = orderId.match(/SAHYOG\d+/);
+    const trackingId = match ? match[0] : null;
 
     if (!trackingId) return res.sendStatus(200);
 
     const delivery = await Delivery.findOne({ trackingId });
     if (!delivery) return res.sendStatus(200);
 
-    // If already Paid → ignore (prevent duplicate)
-    if (delivery.codPaymentStatus === "Paid - Online") {
-      return res.sendStatus(200);
+    if (delivery.codPaymentStatus !== "Paid - Online") {
+      delivery.codPaymentStatus = "Paid - Online";
+      await delivery.save();
+      console.log("✅ Payment marked Paid - Online:", trackingId);
     }
 
-    // 💰 Update delivery
-    delivery.codPaymentStatus = "Paid - Online";
-    delivery.statusUpdates.push({ status: "Delivered", timestamp: new Date() });
-    delivery.completedAt = new Date();
+    return res.sendStatus(200);
 
-    await delivery.save();
-
-    // --- AUTO-SYNC (UPDATE) ---
-    syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
-
-    // 🔔 Notify Delivery Boy
-    if (delivery.assignedTo) {
-      const deliveryBoy = await User.findById(delivery.assignedTo);
-      if (deliveryBoy?.fcmTokens?.length) {
-        for (const token of deliveryBoy.fcmTokens) {
-          await sendNotification(
-            token,
-            "💰 Payment Success!",
-            `Order ${trackingId} ke liye online payment mil gaya hai aur delivery auto-complete ho gayi hai.`,
-            deliveryBoy._id,
-            { tag: `payment-success-${trackingId}` }
-          );
-        }
-      }
-    }
-
-    console.log("✅ CASHFREE WEBHOOK: PAYMENT + DELIVERY AUTO COMPLETED:", trackingId);
-    res.sendStatus(200);
   } catch (err) {
     console.error("Webhook error:", err);
-    res.sendStatus(500);
+    return res.sendStatus(500);
   }
 });
 // --- (NEW) Start Server ---
