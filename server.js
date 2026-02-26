@@ -1884,9 +1884,8 @@ app.post("/api/cashfree-webhook", async (req, res) => {
     }
 
     const orderId = event.data.order.order_id;
-    const trackingId = orderId.includes("_")
-      ? orderId.split("_")[1]
-      : orderId;
+    const parts = orderId.split("_");
+    const trackingId = parts[1];   // COD_TRACKINGID_TIMESTAMP
 
     const delivery = await Delivery.findOne({ trackingId });
     if (!delivery) return res.sendStatus(200);
