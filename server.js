@@ -1900,6 +1900,25 @@ app.get("/api/payment-status/:trackingId", auth(['delivery', 'admin', 'manager']
 //webhook 
 import crypto from "crypto";
 
+const signature = req.headers["x-webhook-signature"];
+
+if (!signature) {
+  console.log("❌ No signature header");
+  return res.sendStatus(400);
+}
+
+const expectedSignature = crypto
+  .createHmac("sha256", process.env.CASHFREE_SECRET_KEY)
+  .update(req.rawBody)     // ⚠️ BUFFER
+  .digest("base64");
+
+if (signature !== expectedSignature) {
+  console.log("❌ Invalid webhook signature");
+  console.log("Received:", signature);
+  console.log("Expected:", expectedSignature);
+  return res.sendStatus(400);
+}
+
 app.post("/api/cashfree-webhook", async (req, res) => {
   try {
     const signature = req.headers["x-webhook-signature"];
