@@ -1824,7 +1824,8 @@ app.post("/api/create-payment-order", auth(['delivery', 'admin', 'manager']), as
 
     res.json({
       success: true,
-      sessionId: data.payment_session_id
+      sessionId: data.payment_session_id,
+      paymentLink: data.payment_link
     });
 
   } catch (err) {
@@ -1855,6 +1856,40 @@ app.get("/api/payment-status/:trackingId", auth(['delivery', 'admin', 'manager']
   if (!delivery) return res.json({ paid: false });
 
   res.json({ paid: delivery.codPaymentStatus === "Paid - Online" });
+});
+
+//webhook 
+app.post("/api/cashfree-webhook", async (req, res) => {
+  try {
+    const event = req.body;
+
+    // Only success payment
+    if (event.type !== "PAYMENT_SUCCESS_WEBHOOK") {
+      return res.sendStatus(200);
+    }
+
+    const orderId = event.data.order.order_id;
+    const trackingId = orderId.split("_")[1];
+
+    const delivery = await Delivery.findOne({ trackingId });
+    if (!delivery) return res.sendStatus(200);
+
+    // Already paid? ignore
+    if (delivery.codPaymentStatus === "Paid - Online") {
+      return res.sendStatus(200);
+    }
+
+    delivery.codPaymentStatus = "Paid - Online";
+    await delivery.save();
+
+    console.log("💰 Payment confirmed:", trackingId);
+
+    res.sendStatus(200);
+
+  } catch (err) {
+    console.error("Webhook error:", err);
+    res.sendStatus(500);
+  }
 });
 // 1. Create COD Payment Session
 app.post("/api/cod/create-payment-session", async (req, res) => {
