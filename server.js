@@ -1783,6 +1783,66 @@ app.get("/api/payment-success", (req, res) => {
 });
 
 // --- 11.5 NEW Cashfree COD QR Support (PRD FIX) ---
+// ===== Cashfree COD Online Payment =====
+import fetch from "node-fetch";
+
+app.post("/api/create-payment-order", auth(['delivery', 'admin', 'manager']), async (req, res) => {
+  try {
+    const { amount, trackingId } = req.body;
+
+    const response = await fetch("https://api.cashfree.com/pg/orders", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-client-id": process.env.CASHFREE_APP_ID,
+        "x-client-secret": process.env.CASHFREE_SECRET_KEY,
+        "x-api-version": "2023-08-01"
+      },
+      body: JSON.stringify({
+        order_id: `COD_${trackingId}_${Date.now()}`,
+        order_amount: Number(amount),
+        order_currency: "INR",
+        order_note: `COD Online Payment for ${trackingId}`,
+        customer_details: {
+          customer_id: trackingId,
+          customer_phone: "9999999999"
+        }
+      })
+    });
+
+    const data = await response.json();
+    console.log("Cashfree Order:", data);
+
+    if (!response.ok) {
+      return res.status(400).json(data);
+    }
+
+    res.json({
+      success: true,
+      sessionId: data.payment_session_id
+    });
+
+  } catch (err) {
+    console.error("Payment Order Error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post("/api/payment-success", auth(['delivery', 'admin', 'manager']), async (req, res) => {
+  try {
+    const { trackingId } = req.body;
+
+    const delivery = await Delivery.findOne({ trackingId });
+    if (!delivery) return res.status(404).json({ message: "Delivery not found" });
+
+    delivery.codPaymentStatus = "Paid - Online";
+    await delivery.save();
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 // 1. Create COD Payment Session
 app.post("/api/cod/create-payment-session", async (req, res) => {
   console.log("📝 cod/create-payment-session hit:", req.body);
