@@ -1789,7 +1789,10 @@ import fetch from "node-fetch";
 app.post("/api/create-payment-order", auth(['delivery', 'admin', 'manager']), async (req, res) => {
   try {
     const { amount, trackingId } = req.body;
-
+    const delivery = await Delivery.findOne({ trackingId });
+    if (!delivery) {
+      return res.status(404).json({ message: "Delivery not found" });
+    }
     const response = await fetch("https://api.cashfree.com/pg/orders", {
       method: "POST",
       headers: {
@@ -1798,6 +1801,7 @@ app.post("/api/create-payment-order", auth(['delivery', 'admin', 'manager']), as
         "x-client-secret": process.env.CASHFREE_SECRET_KEY,
         "x-api-version": "2023-08-01"
       },
+
       body: JSON.stringify({
         order_id: `COD_${trackingId}_${Date.now()}`,
         order_amount: Number(amount),
@@ -1805,7 +1809,8 @@ app.post("/api/create-payment-order", auth(['delivery', 'admin', 'manager']), as
         order_note: `COD Online Payment for ${trackingId}`,
         customer_details: {
           customer_id: trackingId,
-          customer_phone: "9999999999"
+          customer_name: delivery?.customerName || "Vedang Soni",
+          customer_phone: delivery?.customerPhone || "9243714402"
         }
       })
     });
