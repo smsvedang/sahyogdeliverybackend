@@ -14,7 +14,7 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
-app.use(express.json());
+app.use(express.json({ verify: (req, res, buf) => { req.rawBody = buf; } }));
 
 const allowedOrigins = [
   "https://sahyogdelivery.vercel.app",
@@ -1806,11 +1806,14 @@ app.post("/api/create-payment-order", auth(['delivery', 'admin', 'manager']), as
         order_id: `COD_${trackingId}_${Date.now()}`,
         order_amount: Number(amount),
         order_currency: "INR",
-        order_note: `COD Online Payment for ${trackingId}`,
+        order_note: `Sahyog Courier: ${trackingId}`,
         customer_details: {
           customer_id: trackingId,
           customer_name: delivery?.customerName || "Vedang Soni",
           customer_phone: delivery?.customerPhone || "9243714402"
+        },
+        order_meta: {
+          return_url: `https://sahyogdelivery.vercel.app/delivery.html?trackingId=${trackingId}`
         }
       })
     });
@@ -1863,15 +1866,14 @@ import crypto from "crypto";
 app.post("/api/cashfree-webhook", async (req, res) => {
   try {
     const signature = req.headers["x-webhook-signature"];
-    const rawBody = JSON.stringify(req.body);
 
     const expected = crypto
       .createHmac("sha256", process.env.CASHFREE_SECRET_KEY)
-      .update(rawBody)
+      .update(req.rawBody)
       .digest("base64");
 
     if (signature !== expected) {
-      console.log("Invalid webhook signature");
+      console.log("❌ Invalid webhook signature");
       return res.sendStatus(400);
     }
 
@@ -1882,7 +1884,9 @@ app.post("/api/cashfree-webhook", async (req, res) => {
     }
 
     const orderId = event.data.order.order_id;
-    const trackingId = orderId.split("_")[1];
+    const trackingId = orderId.includes("_")
+      ? orderId.split("_")[1]
+      : orderId;
 
     const delivery = await Delivery.findOne({ trackingId });
     if (!delivery) return res.sendStatus(200);
