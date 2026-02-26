@@ -1900,7 +1900,7 @@ app.get("/api/payment-status/:trackingId", auth(['delivery', 'admin', 'manager']
 //webhook 
 import crypto from "crypto";
 
-app.post("/api/cashfree-webhook", async (req, res) => {
+app.post("/api/cashfree-webhook", express.raw({ type: "application/json" }), async (req, res) => {
   try {
     const signature =
       req.headers["x-webhook-signature"] ||
@@ -1911,10 +1911,9 @@ app.post("/api/cashfree-webhook", async (req, res) => {
       return res.sendStatus(400);
     }
 
-    // ⚠️ Cashfree PG uses HEX digest (not base64)
     const expectedSignature = crypto
       .createHmac("sha256", process.env.CASHFREE_SECRET_KEY)
-      .update(req.rawBody)   // raw buffer
+      .update(req.body)     // ⚠️ use req.body directly (buffer)
       .digest("base64");
 
     if (signature !== expectedSignature) {
@@ -1924,7 +1923,8 @@ app.post("/api/cashfree-webhook", async (req, res) => {
       return res.sendStatus(400);
     }
 
-    const event = req.body;
+    // Convert buffer to JSON AFTER signature verify
+    const event = JSON.parse(req.body.toString());
 
     if (event.type !== "PAYMENT_SUCCESS_WEBHOOK") {
       return res.sendStatus(200);
@@ -1939,18 +1939,19 @@ app.post("/api/cashfree-webhook", async (req, res) => {
     const delivery = await Delivery.findOne({ trackingId });
     if (!delivery) return res.sendStatus(200);
 
-    if (delivery.codPaymentStatus !== "Paid - Online") {
-      delivery.codPaymentStatus = "Paid - Online";
-      await delivery.save();
-      console.log("✅ Payment marked Paid - Online:", trackingId);
-    }
+    delivery.codPaymentStatus = "Paid - Online";
+    await delivery.save();
+
+    console.log("✅ Payment marked Paid - Online:", trackingId);
 
     return res.sendStatus(200);
+
   } catch (err) {
     console.error("Webhook error:", err);
     return res.sendStatus(500);
   }
-});
+}
+);
 // --- (NEW) Start Server ---
 
 
