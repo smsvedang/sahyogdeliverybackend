@@ -1848,6 +1848,14 @@ app.post("/api/payment-success", auth(['delivery', 'admin', 'manager']), async (
     res.status(500).json({ error: err.message });
   }
 });
+
+app.get("/api/payment-status/:trackingId", auth(['delivery', 'admin', 'manager']), async (req, res) => {
+  const delivery = await Delivery.findOne({ trackingId: req.params.trackingId });
+
+  if (!delivery) return res.json({ paid: false });
+
+  res.json({ paid: delivery.codPaymentStatus === "Paid - Online" });
+});
 // 1. Create COD Payment Session
 app.post("/api/cod/create-payment-session", async (req, res) => {
   console.log("📝 cod/create-payment-session hit:", req.body);
