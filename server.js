@@ -1902,19 +1902,25 @@ import crypto from "crypto";
 
 app.post("/api/cashfree-webhook", async (req, res) => {
   try {
-    const signature = req.headers["x-webhook-signature"];
+    const signature =
+      req.headers["x-webhook-signature"] ||
+      req.headers["x-cf-signature"];
+
     if (!signature) {
-      console.log("❌ No signature");
+      console.log("❌ No signature header");
       return res.sendStatus(400);
     }
 
-    const expected = crypto
+    // ⚠️ Cashfree PG uses HEX digest (not base64)
+    const expectedSignature = crypto
       .createHmac("sha256", process.env.CASHFREE_SECRET_KEY)
-      .update(req.rawBody)   // BUFFER
-      .digest("base64");
+      .update(req.rawBody)   // raw buffer
+      .digest("hex");
 
-    if (signature !== expected) {
+    if (signature !== expectedSignature) {
       console.log("❌ Invalid webhook signature");
+      console.log("Received:", signature);
+      console.log("Expected:", expectedSignature);
       return res.sendStatus(400);
     }
 
@@ -1940,7 +1946,6 @@ app.post("/api/cashfree-webhook", async (req, res) => {
     }
 
     return res.sendStatus(200);
-
   } catch (err) {
     console.error("Webhook error:", err);
     return res.sendStatus(500);
