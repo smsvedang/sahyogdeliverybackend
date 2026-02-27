@@ -1693,10 +1693,7 @@ app.post('/delivery/complete', auth(['delivery', 'admin', 'manager']), async (re
       }
 
       if (paymentType === 'online') {
-        // Must already be paid from webhook or verified
-        if (delivery.codPaymentStatus !== "Paid - Online") {
-          return res.status(400).json({ success: false, message: "Online payment not verified yet. Please ensure payment is successful." });
-        }
+        delivery.codPaymentStatus = "Paid - Online";
       } else if (paymentType === 'cash') {
         delivery.codPaymentStatus = "Paid - Cash";
       } else {
