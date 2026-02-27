@@ -1601,7 +1601,14 @@ app.get('/delivery/my-deliveries', auth(['delivery']), async (req, res) => {
       .select("trackingId billAmount customerPhone customerName customerAddress statusUpdates paymentMethod codPaymentStatus assignedTo currentStatus")
       .sort({ createdAt: -1 });
 
-    res.json({ deliveries: deliveries || [] });
+    const safeDeliveries = deliveries || [];
+    res.json({
+      deliveries: safeDeliveries,
+      total: safeDeliveries.length,
+      count: safeDeliveries.length,
+      totalCount: safeDeliveries.length,
+      totalDeliveries: safeDeliveries.length
+    });
 
   } catch (error) {
     console.error("Fetch Assigned Error:", error);
@@ -1728,7 +1735,13 @@ app.post('/delivery/complete', auth(['delivery', 'admin', 'manager']), async (re
       }
     }
 
-    res.json({ success: true, message: "Delivery completed successfully", trackingId: delivery.trackingId });
+    res.json({
+      success: true,
+      message: "Delivery completed successfully",
+      trackingId: delivery.trackingId,
+      status: "Delivered",
+      currentStatus: "Delivered"
+    });
   } catch (error) {
     console.error("Complete Delivery Error:", error);
     res.status(400).json({ success: false, message: error.message });
