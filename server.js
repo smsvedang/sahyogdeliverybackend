@@ -21,6 +21,8 @@ const allowedOrigins = [
   "http://localhost:5500"
 ];
 
+// Cashfree webhook requires raw body for signature verification.
+app.use('/api/cashfree-webhook', express.raw({ type: "application/json" }));
 app.use(express.json());
 app.use(cors({
   origin: function (origin, callback) {
@@ -1900,24 +1902,25 @@ app.get("/api/payment-status/:trackingId", auth(['delivery', 'admin', 'manager']
 //webhook 
 import crypto from "crypto";
 
-app.post("/api/cashfree-webhook",
-  express.raw({ type: "application/json" }),
-  async (req, res) => {
+app.post("/api/cashfree-webhook", async (req, res) => {
     try {
       const signature =
         req.headers["x-webhook-signature"] ||
         req.headers["x-cf-signature"];
-
-      const rawBody = req.body.toString();
 
       if (!signature) {
         console.log("❌ No signature header");
         return res.sendStatus(400);
       }
 
+      if (!Buffer.isBuffer(req.body)) {
+        console.log("❌ Invalid webhook body format");
+        return res.sendStatus(400);
+      }
+
       const expectedSignature = crypto
         .createHmac("sha256", process.env.CASHFREE_SECRET_KEY)
-        .update(req.body)     // ⚠️ use req.body directly (buffer)
+        .update(req.body)
         .digest("base64");
 
       if (signature !== expectedSignature) {
@@ -1934,9 +1937,9 @@ app.post("/api/cashfree-webhook",
         return res.sendStatus(200);
       }
 
-      const orderId = event.data.order.order_id;
-      const match = orderId.match(/SAHYOG\d+/);
-      const trackingId = match ? match[0] : null;
+      const orderId = event?.data?.order?.order_id || "";
+      const match = orderId.match(/^COD_(.+)_\d+$/);
+      const trackingId = match?.[1] || event?.data?.order?.customer_details?.customer_id || null;
 
       if (!trackingId) return res.sendStatus(200);
 
@@ -1954,8 +1957,7 @@ app.post("/api/cashfree-webhook",
       console.error("Webhook error:", err);
       return res.sendStatus(500);
     }
-  }
-);
+});
 // --- (NEW) Start Server ---
 
 
