@@ -243,7 +243,9 @@ const deliverySchema = new mongoose.Schema({
   cashReceivedByAdmin: { type: Boolean, default: false },
   cashReceivedAt: { type: Date, default: null },
   completedAt: { type: Date, default: null },
-  assignedAt: { type: Date, default: null }
+  assignedAt: { type: Date, default: null },
+  cancellationOtp: String,
+  cancellationReason: String
 }, { timestamps: true });
 
 deliverySchema.virtual('currentStatus').get(function () {
@@ -337,7 +339,7 @@ async function syncSingleDeliveryToSheet(deliveryId, action = 'update') {
       (delivery.paymentMethod === 'COD' ? (delivery.codPaymentStatus || 'Pending') : 'N/A'),
       delivery.assignedByManager ? delivery.assignedByManager.name : 'N/A',
       delivery.assignedTo ? delivery.assignedTo.name : 'N/A',
-      delivery.otp || 'N/A',
+      delivery.cancellationOtp ? `CANCEL: ${delivery.cancellationOtp}` : (delivery.otp || 'N/A'),
       new Date(delivery.createdAt).toLocaleDateString('en-IN') // Simple Date
     ];
 
@@ -427,6 +429,38 @@ const draftOrderSchema = new mongoose.Schema({
 
 const DraftOrder = mongoose.model('DraftOrder', draftOrderSchema);
 
+
+// Helper: Get Admin FCM Tokens ONLY (For securely sending OTPs)
+async function getAdminFcmTokens() {
+  const admins = await User.find({ role: 'admin', isActive: true });
+  let tokens = [];
+  admins.forEach(u => {
+    if (u.fcmTokens && u.fcmTokens.length > 0) {
+      tokens = tokens.concat(u.fcmTokens);
+    }
+  });
+  return tokens;
+}
+
+// Helper: Get Staff FCM Tokens (Admin + Manager)
+async function getStaffFcmTokens() {
+  const staff = await User.find({ role: { $in: ['admin', 'manager'] }, isActive: true });
+  let tokens = [];
+  staff.forEach(u => {
+    if (u.fcmTokens && u.fcmTokens.length > 0) {
+      tokens = tokens.concat(u.fcmTokens);
+    }
+  });
+  return tokens;
+}
+
+const chunkArray = (arr, size) => {
+  const chunks = [];
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
+  }
+  return chunks;
+};
 
 // --- 5. Auth APIs --- (No changes)
 // 5.1. Login
@@ -698,6 +732,51 @@ app.get('/delivery/completed', auth(['delivery']), async (req, res) => {
   res.json(deliveries);
 });
 
+// 7.8. Manager Summary / Inventory API
+app.get('/manager/summary', auth(['manager']), async (req, res) => {
+  try {
+    const managerId = req.user.userId;
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const deliveries = await Delivery.find({ assignedByManager: managerId });
+    
+    let summary = {
+      totalReceived: deliveries.length,
+      pendingAssignment: 0,
+      outForDelivery: 0,
+      deliveredToday: 0,
+      cancelledToday: 0,
+      cashInHand: 0
+    };
+
+    deliveries.forEach(d => {
+      const status = d.currentStatus;
+      if (status === 'Pending' || (d.assignedTo === null && status !== 'Delivered' && status !== 'Cancelled')) {
+        summary.pendingAssignment++;
+      } else if (status !== 'Delivered' && status !== 'Cancelled') {
+        summary.outForDelivery++;
+      }
+
+      if (status === 'Delivered') {
+        if (d.completedAt >= startOfDay) summary.deliveredToday++;
+        if (d.paymentMethod === 'COD' && d.codPaymentStatus === 'Paid - Cash') {
+           summary.cashInHand += (d.billAmount || 0);
+        }
+      }
+
+      if (status === 'Cancelled' && d.completedAt >= startOfDay) {
+        summary.cancelledToday++;
+      }
+    });
+
+    res.json(summary);
+  } catch (err) {
+    console.error("Manager Summary Error:", err);
+    res.status(500).json({ message: "Error calculating summary" });
+  }
+});
+
 // 7.5. Update User Details (No changes)
 app.put('/admin/user/:userId', auth(['admin']), async (req, res) => {
   try {
@@ -764,6 +843,21 @@ app.patch('/admin/user/:userId/toggle-active', auth(['admin']), async (req, res)
   } catch (error) {
     console.error("Toggle Active Error:", error);
     res.status(500).json({ message: 'Server error toggling status', error: error.message });
+  }
+});
+
+// 7.7. Remove a user completely (Admin)
+app.delete('/admin/user/:userId', auth(['admin']), async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const result = await User.findByIdAndDelete(userId);
+    if (!result) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    res.json({ message: 'User deleted successfully' });
+  } catch (error) {
+    console.error("Delete User Error:", error);
+    res.status(500).json({ message: 'Server error deleting user', error: error.message });
   }
 });
 
@@ -1444,6 +1538,78 @@ app.patch('/manager/assign-delivery/:deliveryId', auth(['manager']), async (req,
   }
 });
 
+// 8.4b. Manager: Bulk Assign Deliveries to Boy
+app.post('/manager/bulk-assign-deliveries', auth(['manager']), async (req, res) => {
+  try {
+    const { deliveryIds, assignedBoyId } = req.body;
+    if (!assignedBoyId) return res.status(400).json({ message: 'Delivery Boy ID is required' });
+    if (!deliveryIds || !Array.isArray(deliveryIds) || deliveryIds.length === 0) {
+      return res.status(400).json({ message: 'Delivery IDs are required' });
+    }
+
+    const boy = await User.findOne({ _id: assignedBoyId, role: 'delivery', createdByManager: req.user.userId });
+    if (!boy) return res.status(404).json({ message: 'Delivery boy not found or does not belong to you' });
+    if (!boy.isActive) return res.status(400).json({ message: 'Cannot assign to inactive delivery boy' });
+
+    const results = [];
+    for (const deliveryId of deliveryIds) {
+      const delivery = await Delivery.findById(deliveryId);
+      if (!delivery) {
+        results.push({ deliveryId, status: 'error', message: 'Not found' });
+        continue;
+      }
+      if (!delivery.assignedByManager || delivery.assignedByManager.toString() !== req.user.userId) {
+        results.push({ deliveryId, status: 'error', message: 'Not assigned to you' });
+        continue;
+      }
+      if (delivery.assignedTo) {
+        results.push({ deliveryId, status: 'error', message: 'Already assigned' });
+        continue;
+      }
+
+      delivery.assignedTo = boy._id;
+      delivery.assignedBoyDetails = { name: boy.name, phone: boy.phone };
+      delivery.assignedAt = new Date();
+      delivery.statusUpdates.push({ status: 'Boy Assigned', timestamp: new Date() });
+      await delivery.save();
+
+      // --- AUTO-SYNC (UPDATE) ---
+      syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
+
+      results.push({ deliveryId, status: 'success', trackingId: delivery.trackingId });
+    }
+
+    // 🔔 NOTIFY DELIVERY BOY (Once for bulk)
+    const boyTokens = Array.isArray(boy.fcmTokens) ? boy.fcmTokens : (boy.fcmTokens ? [boy.fcmTokens] : []);
+    if (boyTokens.length) {
+      const successCount = results.filter(r => r.status === 'success').length;
+      if (successCount > 0) {
+        for (const token of boyTokens) {
+          await sendNotification(
+            token,
+            "🚀 Naye Parcels Assign Hue!",
+            `Bhaiya aapko ${successCount} naye parcels assign hue hain. Jaldi se pickup kar lijiye. | ${getISTTime()}`,
+            boy._id,
+            {
+              headers: { Urgency: "high" },
+              icon: "https://sahyogdelivery.vercel.app/favicon.png",
+              badge: "https://sahyogdelivery.vercel.app/favicon.png",
+              tag: `bulk-delivery-${Date.now()}`,
+              requireInteraction: true,
+              link: "https://sahyogdelivery.vercel.app/login.html"
+            }
+          );
+        }
+      }
+    }
+
+    res.json({ message: 'Bulk assignment processed', results });
+  } catch (error) {
+    console.error("Bulk Assign Error:", error);
+    res.status(500).json({ message: 'Server error during bulk assignment', error: error.message });
+  }
+});
+
 // 8.5. Manager: Get ALL pending deliveries (No changes)
 app.get('/manager/all-pending-deliveries', auth(['manager']), async (req, res) => {
   try {
@@ -1601,14 +1767,7 @@ app.get('/delivery/my-deliveries', auth(['delivery']), async (req, res) => {
       .select("trackingId billAmount customerPhone customerName customerAddress statusUpdates paymentMethod codPaymentStatus assignedTo currentStatus")
       .sort({ createdAt: -1 });
 
-    const safeDeliveries = deliveries || [];
-    res.json({
-      deliveries: safeDeliveries,
-      total: safeDeliveries.length,
-      count: safeDeliveries.length,
-      totalCount: safeDeliveries.length,
-      totalDeliveries: safeDeliveries.length
-    });
+    res.json({ deliveries: deliveries || [] });
 
   } catch (error) {
     console.error("Fetch Assigned Error:", error);
@@ -1735,16 +1894,110 @@ app.post('/delivery/complete', auth(['delivery', 'admin', 'manager']), async (re
       }
     }
 
-    res.json({
-      success: true,
-      message: "Delivery completed successfully",
-      trackingId: delivery.trackingId,
-      status: "Delivered",
-      currentStatus: "Delivered"
-    });
+    res.json({ success: true, message: "Delivery completed successfully", trackingId: delivery.trackingId });
   } catch (error) {
     console.error("Complete Delivery Error:", error);
     res.status(400).json({ success: false, message: error.message });
+  }
+});
+
+// 9.4. Request Cancellation OTP
+app.post('/delivery/request-cancel-otp', auth(['delivery']), async (req, res) => {
+  try {
+    const { trackingId } = req.body;
+    if (!trackingId) return res.status(400).json({ success: false, message: "trackingId required" });
+
+    const delivery = await Delivery.findOne({ trackingId, assignedTo: req.user.userId });
+    if (!delivery) return res.status(404).json({ success: false, message: "Delivery not found or not assigned to you" });
+
+    if (['Delivered', 'Cancelled'].includes(delivery.currentStatus)) {
+      return res.status(400).json({ success: false, message: `Cannot cancel: Delivery is already ${delivery.currentStatus}` });
+    }
+
+    // Generate 4-digit OTP
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+    delivery.cancellationOtp = otp;
+    // Notify Admin ONLY (FCM)
+    const adminTokens = await getAdminFcmTokens();
+    if (adminTokens.length > 0) {
+        const payload = {
+          notification: {
+            title: 'Cancellation Request!',
+            body: `Order ${delivery.trackingId} needs cancellation. OTP: ${otp}. Reason: ${reason || 'N/A'}`,
+            click_action: `${process.env.FRONTEND_URL || ''}/admin.html`
+          }
+        };
+        const chunkedTokens = chunkArray(adminTokens, 100);
+        for (const chunk of chunkedTokens) {
+          try { await admin.messaging().sendEachForMulticast({ tokens: chunk, notification: payload.notification }); } catch(err) { console.error("FCM req-cancel-admin error:", err); }
+        }
+    }
+
+    await delivery.save();
+
+    res.json({ 
+      success: true, 
+      message: "Cancellation OTP generated and sent to Admin.",
+      trackingId 
+    });
+  } catch (error) {
+    console.error("Request Cancel OTP Error:", error);
+    res.status(500).json({ success: false, message: "Server error generating OTP" });
+  }
+});
+
+// 9.5. Confirm Cancellation
+app.post('/delivery/confirm-cancel', auth(['delivery']), async (req, res) => {
+  try {
+    const { trackingId, otp, reason } = req.body;
+    if (!trackingId || !otp || !reason) {
+      return res.status(400).json({ success: false, message: "TrackingId, OTP, and Reason are required" });
+    }
+
+    const delivery = await Delivery.findOne({ trackingId, assignedTo: req.user.userId });
+    if (!delivery) return res.status(404).json({ success: false, message: "Delivery not found or not assigned to you" });
+
+    if (delivery.cancellationOtp !== otp) {
+      return res.status(400).json({ success: false, message: "Invalid Cancellation OTP" });
+    }
+
+    const validReasons = ['customer no response', 'Request for reschedule', 'order rejected by customer'];
+    if (!validReasons.includes(reason)) {
+      return res.status(400).json({ success: false, message: "Invalid cancellation reason" });
+    }
+
+    delivery.statusUpdates.push({ 
+      status: "Cancelled", 
+      timestamp: new Date(),
+      remarks: `Reason: ${reason}`
+    });
+    delivery.cancellationReason = reason;
+    delivery.cancellationOtp = null; // Clear OTP after use
+    await delivery.save();
+
+    // --- AUTO-SYNC (UPDATE) ---
+    syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
+
+    // 🔔 Notify Staff
+    const staff = await User.find({ role: { $in: ['admin', 'manager'] }, isActive: true });
+    for (const s of staff) {
+      if (s?.fcmTokens?.length) {
+        for (const token of s.fcmTokens) {
+          await sendNotification(
+            token,
+            "❌ Order Cancelled",
+            `Order ${delivery.trackingId} has been cancelled by delivery boy.\nReason: ${reason}\nTime: ${getISTTime()}`,
+            s._id,
+            { tag: `cancel-${delivery.trackingId}` }
+          );
+        }
+      }
+    }
+
+    res.json({ success: true, message: "Order cancelled successfully", trackingId });
+  } catch (error) {
+    console.error("Confirm Cancel Error:", error);
+    res.status(500).json({ success: false, message: "Server error during cancellation" });
   }
 });
 
@@ -1767,7 +2020,14 @@ app.get('/track/:trackingId', async (req, res) => {
       return res.status(404).json({ message: 'Tracking ID not found' });
     }
 
-    res.json(delivery);
+    const { otp, cancellationOtp, ...safeDelivery } = delivery.toObject();
+    const result = {
+      ...safeDelivery,
+      currentStatus: delivery.currentStatus, // include virtual
+      isCancellationRequested: !!delivery.cancellationOtp
+    };
+
+    res.json(result);
   } catch (err) {
     console.error("Track Error:", err);
     res.status(500).json({ message: 'Server error' });
