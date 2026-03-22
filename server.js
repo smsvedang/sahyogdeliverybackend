@@ -867,8 +867,32 @@ app.post('/admin/dispatch-bulk', auth(['admin']), async (req, res) => {
 });
 
 // 7.10. Bulk Receive at Branch (SCAN)
-app.get('/manager/receive-bulk', auth(['manager']), async (req, res) => {
-   // Dummy for now, actual implementation below
+app.post('/manager/receive-bulk', auth(['manager']), async (req, res) => {
+  try {
+    const { trackingIds } = req.body;
+    if (!trackingIds || !Array.isArray(trackingIds)) return res.status(400).json({ message: "trackingIds array required" });
+
+    const results = await Delivery.updateMany(
+      { 
+        trackingId: { $in: trackingIds }, 
+        assignedByManager: req.user.userId 
+      },
+      { 
+        $set: { 
+          assignedTo: null, 
+          assignedBoyDetails: null 
+        },
+        $push: { 
+          statusUpdates: { status: 'Received at Branch', timestamp: new Date() } 
+        }
+      }
+    );
+
+    res.json({ message: `${results.modifiedCount} parcels marked as Received at Branch & Un-assigned.` });
+  } catch (err) {
+    console.error("Receive error:", err);
+    res.status(500).json({ message: "Server error during receive" });
+  }
 });
 
 // 7.11. Remove a user completely (Admin)
@@ -1452,12 +1476,25 @@ app.post('/admin/convert-draft-to-courier', auth(['admin']), async (req, res) =>
 // 8.1. Manager: Get Pickups assigned (No changes)
 app.get('/manager/assigned-pickups', auth(['manager']), async (req, res) => {
   try {
-    const deliveries = await Delivery.find({
+    const query = {
       assignedByManager: req.user.userId,
       assignedTo: null,
-      'statusUpdates.status': 'Booked'
+      $or: [
+        { 'statusUpdates.status': 'Booked' },
+        { statusUpdates: { $elemMatch: { status: 'Received at Branch' } } }
+      ]
+    };
+    
+    // Check currentStatus virtual in memory or use statusUpdates check
+    const deliveries = await Delivery.find({
+      assignedByManager: req.user.userId,
+      assignedTo: null
     }).sort({ createdAt: 1 });
-    res.json(deliveries);
+
+    // Filter by currentStatus in JS to ensure accuracy with virtuals/arrays
+    const available = deliveries.filter(d => ['Booked', 'Received at Branch'].includes(d.currentStatus));
+    
+    res.json(available);
   } catch (error) {
     console.error("Fetch Assigned Pickups Error:", error);
     res.status(500).json({ message: 'Error fetching assigned pickups' });
@@ -1779,20 +1816,32 @@ app.post('/manager/reassign-delivery/:deliveryId', auth(['manager']), async (req
 // 9.1. Get Assigned Deliveries (No changes)
 app.get('/delivery/my-deliveries', auth(['delivery']), async (req, res) => {
   try {
-    const deliveries = await Delivery.find({
-      assignedTo: req.user.userId,
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 5;
+    const skip = (page - 1) * limit;
 
-      // ❌ Completed/Cancelled deliveries hide (Rescheduled stays for next attempt)
+    const query = {
+      assignedTo: req.user.userId,
       statusUpdates: {
         $not: {
-          $elemMatch: { status: { $in: ["Delivered", "Cancelled"] } }
+          $elemMatch: { status: { $in: ["Delivered", "Cancelled", "Rescheduled"] } }
         }
       }
-    })
-      .select("trackingId billAmount customerPhone customerName customerAddress statusUpdates paymentMethod codPaymentStatus assignedTo currentStatus")
-      .sort({ createdAt: -1 });
+    };
 
-    res.json({ deliveries: deliveries || [] });
+    const totalDeliveries = await Delivery.countDocuments(query);
+    const deliveries = await Delivery.find(query)
+      .select("trackingId billAmount customerPhone customerName customerAddress statusUpdates paymentMethod codPaymentStatus assignedTo currentStatus")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    res.json({
+      deliveries: deliveries || [],
+      totalDeliveries,
+      currentPage: page,
+      totalPages: Math.ceil(totalDeliveries / limit)
+    });
 
   } catch (error) {
     console.error("Fetch Assigned Error:", error);
