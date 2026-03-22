@@ -1824,7 +1824,7 @@ app.get('/delivery/my-deliveries', auth(['delivery']), async (req, res) => {
       assignedTo: req.user.userId,
       statusUpdates: {
         $not: {
-          $elemMatch: { status: { $in: ["Delivered", "Cancelled", "Rescheduled"] } }
+          $elemMatch: { status: { $in: ["Delivered", "Cancelled"] } }
         }
       }
     };
@@ -2051,6 +2051,13 @@ app.post('/delivery/confirm-cancel', auth(['delivery']), async (req, res) => {
     });
     delivery.cancellationReason = reason;
     delivery.cancellationOtp = null; // Clear OTP after use
+
+    // If rescheduled, unassign so it can be re-assigned after manager receive
+    if (isReschedule) {
+      delivery.assignedTo = null;
+      delivery.assignedBoyDetails = null;
+    }
+
     await delivery.save();
 
     // --- AUTO-SYNC (UPDATE) ---
