@@ -1823,6 +1823,7 @@ app.post('/delivery/update-status', auth(['delivery']), async (req, res) => {
       switch (delivery.currentStatus) {
         case 'Booked':
         case 'Boy Assigned':
+        case 'Rescheduled':
           finalStatus = 'Picked Up';
           break;
         case 'Picked Up':
