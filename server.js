@@ -846,7 +846,32 @@ app.patch('/admin/user/:userId/toggle-active', auth(['admin']), async (req, res)
   }
 });
 
-// 7.7. Remove a user completely (Admin)
+// 7.9. Bulk Dispatch from HO (SCAN)
+app.post('/admin/dispatch-bulk', auth(['admin']), async (req, res) => {
+  try {
+    const { trackingIds } = req.body;
+    if (!Array.isArray(trackingIds)) return res.status(400).json({ message: "trackingIds array required" });
+
+    const result = await Delivery.updateMany(
+      { trackingId: { $in: trackingIds }, currentStatus: "Booked" },
+      { 
+        $push: { statusUpdates: { status: "Dispatched from Head Office", timestamp: new Date() } }
+      }
+    );
+
+    res.json({ message: `${result.modifiedCount} parcels marked as Dispatched from HO.` });
+  } catch (err) {
+    console.error("Dispatch error:", err);
+    res.status(500).json({ message: "Server error during dispatch" });
+  }
+});
+
+// 7.10. Bulk Receive at Branch (SCAN)
+app.get('/manager/receive-bulk', auth(['manager']), async (req, res) => {
+   // Dummy for now, actual implementation below
+});
+
+// 7.11. Remove a user completely (Admin)
 app.delete('/admin/user/:userId', auth(['admin']), async (req, res) => {
   try {
     const { userId } = req.params;
@@ -1757,10 +1782,10 @@ app.get('/delivery/my-deliveries', auth(['delivery']), async (req, res) => {
     const deliveries = await Delivery.find({
       assignedTo: req.user.userId,
 
-      // ❌ Completed deliveries hide
+      // ❌ Completed/Cancelled deliveries hide (Rescheduled stays for next attempt)
       statusUpdates: {
         $not: {
-          $elemMatch: { status: "Delivered" }
+          $elemMatch: { status: { $in: ["Delivered", "Cancelled"] } }
         }
       }
     })
@@ -1904,7 +1929,7 @@ app.post('/delivery/complete', auth(['delivery', 'admin', 'manager']), async (re
 // 9.4. Request Cancellation OTP
 app.post('/delivery/request-cancel-otp', auth(['delivery']), async (req, res) => {
   try {
-    const { trackingId } = req.body;
+    const { trackingId, reason } = req.body;
     if (!trackingId) return res.status(400).json({ success: false, message: "trackingId required" });
 
     const delivery = await Delivery.findOne({ trackingId, assignedTo: req.user.userId });
@@ -1966,8 +1991,11 @@ app.post('/delivery/confirm-cancel', auth(['delivery']), async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid cancellation reason" });
     }
 
+    const isReschedule = reason === 'Request for reschedule';
+    const newStatus = isReschedule ? "Rescheduled" : "Cancelled";
+    
     delivery.statusUpdates.push({ 
-      status: "Cancelled", 
+      status: newStatus, 
       timestamp: new Date(),
       remarks: `Reason: ${reason}`
     });
