@@ -390,7 +390,7 @@ app.post('/delivery/complete', auth(['delivery', 'admin', 'manager']), async (re
   d.statusUpdates.push({ status: 'Delivered' }); d.completedAt = new Date();
   if (d.paymentMethod === 'COD') d.codPaymentStatus = paymentType === 'online' ? 'Paid - Online' : 'Paid - Cash';
   await d.save(); syncSingleDeliveryToSheet(d._id, 'update').catch(console.error);
-  res.sendStatus(200);
+  res.json({ success: true });
 });
 
 app.post('/delivery/request-cancel-otp', auth(['delivery']), async (req, res) => {
