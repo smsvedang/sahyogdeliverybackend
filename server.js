@@ -385,7 +385,13 @@ app.post('/manager/reassign-delivery/:id', auth(['manager']), async (req, res) =
 });
 
 app.get('/manager/completed-deliveries', auth(['manager']), async (req, res) => {
-  res.json(await Delivery.find({ assignedByManager: req.user.userId, 'statusUpdates.status': 'Delivered' }).populate('assignedTo', 'name').sort({ completedAt: -1 }));
+  res.json(await Delivery.find({ 
+    assignedByManager: req.user.userId,
+    $or: [
+      { 'statusUpdates.status': 'Delivered' },
+      { 'statusUpdates.status': 'Cancelled' }
+    ]
+  }).populate('assignedTo', 'name').sort({ updatedAt: -1 }));
 });
 
 app.get('/manager/pending-cash-orders', auth(['manager']), async (req, res) => {
@@ -407,7 +413,13 @@ app.get('/delivery/my-deliveries', auth(['delivery']), async (req, res) => {
 });
 
 app.get('/delivery/completed', auth(['delivery']), async (req, res) => {
-  res.json(await Delivery.find({ assignedTo: req.user.userId, 'statusUpdates.status': 'Delivered' }).sort({ completedAt: -1 }).limit(100));
+  res.json(await Delivery.find({ 
+    assignedTo: req.user.userId,
+    $or: [
+      { 'statusUpdates.status': 'Delivered' },
+      { 'statusUpdates.status': 'Cancelled' }
+    ]
+  }).sort({ updatedAt: -1 }).limit(100));
 });
 
 app.post('/delivery/update-status', auth(['delivery']), async (req, res) => {
