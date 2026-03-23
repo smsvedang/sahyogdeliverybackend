@@ -319,7 +319,7 @@ app.post('/manager/create-delivery-boy', auth(['manager']), async (req, res) => 
 
 app.get('/manager/assigned-pickups', auth(['manager']), async (req, res) => {
     const list = await Delivery.find({ assignedByManager: req.user.userId, assignedTo: null }).sort({ createdAt: -1 });
-    res.json(list.filter(d => ['Booked', 'Received at Branch'].includes(d.currentStatus)));
+    res.json(list.filter(d => ['Received at Branch'].includes(d.currentStatus)));
 });
 
 app.get('/manager/all-pending-deliveries', auth(['manager']), async (req, res) => {
@@ -364,6 +364,10 @@ app.get('/delivery/my-deliveries', auth(['delivery']), async (req, res) => {
   const deliveries = await Delivery.find(q).sort({ createdAt: -1 });
   const totalDeliveries = await Delivery.countDocuments(q);
   res.json({ deliveries, totalDeliveries });
+});
+
+app.get('/delivery/completed', auth(['delivery']), async (req, res) => {
+  res.json(await Delivery.find({ assignedTo: req.user.userId, 'statusUpdates.status': 'Delivered' }).sort({ completedAt: -1 }).limit(100));
 });
 
 app.post('/delivery/update-status', auth(['delivery']), async (req, res) => {
