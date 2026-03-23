@@ -448,7 +448,17 @@ app.post("/api/cashfree-webhook", async (req, res) => {
     const ev = JSON.parse(req.body.toString());
     if (ev.type === "PAYMENT_SUCCESS_WEBHOOK") {
       const tid = ev?.data?.order?.order_id.match(/^COD_(.+)_\d+$/)?.[1] || ev?.data?.order?.customer_details?.customer_id;
-      if (tid) await Delivery.findOneAndUpdate({ trackingId: tid }, { codPaymentStatus: "Paid - Online" });
+      if (tid) {
+        const d = await Delivery.findOne({ trackingId: tid });
+        if (d && d.currentStatus !== 'Delivered') {
+            d.currentStatus = 'Delivered';
+            d.completedAt = new Date();
+            d.codPaymentStatus = "Paid - Online";
+            d.statusUpdates.push({ status: 'Delivered', timestamp: new Date() });
+            await d.save();
+            syncSingleDeliveryToSheet(d._id, 'update').catch(console.error);
+        }
+      }
     }
   }
   res.sendStatus(200);
