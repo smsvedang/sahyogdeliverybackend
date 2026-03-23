@@ -68,10 +68,25 @@ const sendNotification = async (token, title, body, userId = null, options = {})
   try {
     await admin.messaging().send(message);
   } catch (err) {
+    console.error('Push notification failed:', {
+      code: err.code,
+      message: err.message,
+      userId,
+      title
+    });
     if (userId && (err.code === 'messaging/invalid-registration-token' || err.code === 'messaging/registration-token-not-registered')) {
       await User.findByIdAndUpdate(userId, { $pull: { fcmTokens: token } });
     }
   }
+};
+
+const sendNotificationToUser = async (user, title, body, options = {}) => {
+  if (!user?.fcmTokens?.length) return;
+  await Promise.allSettled(user.fcmTokens.map(token => sendNotification(token, title, body, user._id, options)));
+};
+
+const sendNotificationToUsers = async (users, title, body, options = {}) => {
+  await Promise.allSettled((users || []).map(user => sendNotificationToUser(user, title, body, options)));
 };
 
 function getISTTime() {
@@ -146,7 +161,7 @@ async function syncSingleDeliveryToSheet(id, action) {
     const rows = res.data.values || [];
     let idx = rows.findIndex(r => r[0] === d.trackingId);
     if (idx !== -1) {
-      await sheets.spreadsheets.values.update({ spreadsheetId: process.env.GOOGLE_SHEET_ID, range: `Sheet1!A${idx+1}`, valueInputOption: 'USER_ENTERED', resource: { values: [row] } });
+      await sheets.spreadsheets.values.update({ spreadsheetId: process.env.GOOGLE_SHEET_ID, range: `Sheet1!A${idx + 1}`, valueInputOption: 'USER_ENTERED', resource: { values: [row] } });
     } else {
       await sheets.spreadsheets.values.append({ spreadsheetId: process.env.GOOGLE_SHEET_ID, range: 'Sheet1!A1', valueInputOption: 'USER_ENTERED', resource: { values: [row] } });
     }
@@ -176,8 +191,9 @@ app.post('/api/login', async (req, res) => {
 });
 
 app.post('/api/save-fcm-token', auth(), async (req, res) => {
-  await User.findByIdAndUpdate(req.user.userId, { $addToSet: { fcmTokens: req.body.token } });
-  res.sendStatus(200);
+  if (!req.body.token) return res.status(400).json({ message: 'Token required' });
+  const user = await User.findByIdAndUpdate(req.user.userId, { $addToSet: { fcmTokens: req.body.token } }, { new: true });
+  res.json({ success: true, tokenCount: user?.fcmTokens?.length || 0 });
 });
 
 app.post('/api/change-password', auth(), async (req, res) => {
@@ -226,7 +242,12 @@ app.post('/admin/create-user', auth(['admin']), async (req, res) => {
 });
 
 app.patch('/admin/user/:id', auth(['admin']), async (req, res) => {
-  const { password, ...update } = req.body;
+  const { password, managerId, role, ...rest } = req.body;
+  const update = { ...rest };
+  if (role) {
+    update.role = role;
+    update.createdByManager = role === 'delivery' ? (managerId || null) : null;
+  }
   if (password) update.password = await bcrypt.hash(password, 10);
   await User.findByIdAndUpdate(req.params.id, update);
   res.sendStatus(200);
@@ -259,12 +280,12 @@ app.post('/admin/dispatch-bulk', auth(['admin']), async (req, res) => {
 app.post('/admin/receive-bulk', auth(['admin']), async (req, res) => {
   const deliveries = await Delivery.find({ trackingId: { $in: req.body.trackingIds } });
   for (let d of deliveries) {
-      if (d.currentStatus === 'Return Received at Branch' || d.currentStatus === 'Cancelled') {
-          d.statusUpdates.push({ status: 'Return Received at Head Office' });
-      } else {
-          d.statusUpdates.push({ status: 'Received by Admin' });
-      }
-      await d.save();
+    if (d.currentStatus === 'Return Received at Branch' || d.currentStatus === 'Cancelled') {
+      d.statusUpdates.push({ status: 'Return Received at Head Office' });
+    } else {
+      d.statusUpdates.push({ status: 'Received by Admin' });
+    }
+    await d.save();
   }
   res.sendStatus(200);
 });
@@ -272,7 +293,7 @@ app.post('/admin/receive-bulk', auth(['admin']), async (req, res) => {
 // Admin: view parcels that have returned to branch, waiting to be scanned at HO
 app.get('/admin/rto-pending-returns', auth(['admin']), async (req, res) => {
   const list = await Delivery.find({ 'statusUpdates.status': 'Return Received at Branch' })
-      .populate('assignedByManager', 'name').sort({ updatedAt: -1 });
+    .populate('assignedByManager', 'name').sort({ updatedAt: -1 });
   res.json(list.filter(d => d.currentStatus === 'Return Received at Branch'));
 });
 
@@ -310,13 +331,16 @@ app.delete('/api/drafts/:id', auth(['admin']), async (req, res) => {
 
 app.get('/manager/summary', auth(['manager']), async (req, res) => {
   const deliveries = await Delivery.find({ assignedByManager: req.user.userId });
-  let s = { totalReceived: deliveries.length, pendingAssignment: 0, outForDelivery: 0, deliveredToday: 0, cancelledToday: 0, cashInHand: 0 };
-  const today = new Date(); today.setHours(0,0,0,0);
+  let s = { totalReceived: deliveries.length, pendingAssignment: 0, outForDelivery: 0, deliveredToday: 0, cancelledToday: 0, cashInHand: 0, todayCashReceived: 0 };
+  const today = new Date(); today.setHours(0, 0, 0, 0);
   deliveries.forEach(d => {
     if (d.currentStatus === 'Booked') s.pendingAssignment++;
     else if (d.currentStatus === 'Picked Up' || d.currentStatus === 'Out for Delivery') s.outForDelivery++;
     if (d.currentStatus === 'Delivered' && d.completedAt >= today) {
       s.deliveredToday++; if (d.paymentMethod === 'COD' && d.codPaymentStatus === 'Paid - Cash') s.cashInHand += d.billAmount;
+    }
+    if (d.cashReceivedAt >= today && d.paymentMethod === 'COD' && d.codPaymentStatus === 'Paid - Cash') {
+      s.todayCashReceived += d.billAmount || 0;
     }
   });
   res.json(s);
@@ -333,24 +357,24 @@ app.post('/manager/create-delivery-boy', auth(['manager']), async (req, res) => 
 });
 
 app.get('/manager/assigned-pickups', auth(['manager']), async (req, res) => {
-    const list = await Delivery.find({ assignedByManager: req.user.userId, assignedTo: null }).sort({ createdAt: -1 });
-    res.json(list.filter(d => ['Received at Branch'].includes(d.currentStatus)));
+  const list = await Delivery.find({ assignedByManager: req.user.userId, assignedTo: null }).sort({ createdAt: -1 });
+  res.json(list.filter(d => ['Received at Branch'].includes(d.currentStatus)));
 });
 
 app.get('/manager/expected-receive', auth(['manager']), async (req, res) => {
-    const list = await Delivery.find({ 
-        assignedByManager: req.user.userId, 
-        assignedTo: null 
-    }).sort({ createdAt: -1 });
-    // Only show parcels in normal forward flow (not cancelled/returned)
-    const excluded = ['Received at Branch', 'Delivered', 'Cancelled', 'Return Received at Branch', 'Return Received at Head Office', 'Booked'];
-    res.json(list.filter(d => !excluded.includes(d.currentStatus)));
+  const list = await Delivery.find({
+    assignedByManager: req.user.userId,
+    assignedTo: null
+  }).sort({ createdAt: -1 });
+  // Only show parcels in normal forward flow (not cancelled/returned)
+  const excluded = ['Received at Branch', 'Delivered', 'Cancelled', 'Return Received at Branch', 'Return Received at Head Office', 'Booked'];
+  res.json(list.filter(d => !excluded.includes(d.currentStatus)));
 });
 
 // RTO parcels at manager level — Cancelled parcels that need to be scanned back at branch
 app.get('/manager/rto-parcels', auth(['manager']), async (req, res) => {
-    const list = await Delivery.find({ assignedByManager: req.user.userId }).sort({ updatedAt: -1 });
-    res.json(list.filter(d => d.currentStatus === 'Cancelled'));
+  const list = await Delivery.find({ assignedByManager: req.user.userId }).sort({ updatedAt: -1 });
+  res.json(list.filter(d => d.currentStatus === 'Cancelled'));
 });
 
 app.get('/manager/all-pending-deliveries', auth(['manager']), async (req, res) => {
@@ -360,13 +384,13 @@ app.get('/manager/all-pending-deliveries', auth(['manager']), async (req, res) =
 app.post('/manager/receive-bulk', auth(['manager']), async (req, res) => {
   const deliveries = await Delivery.find({ trackingId: { $in: req.body.trackingIds } });
   for (let d of deliveries) {
-      if (d.currentStatus === 'Cancelled') {
-          d.statusUpdates.push({ status: 'Return Received at Branch' });
-      } else {
-          d.statusUpdates.push({ status: 'Received at Branch' });
-          d.assignedTo = null;
-      }
-      await d.save();
+    if (d.currentStatus === 'Cancelled') {
+      d.statusUpdates.push({ status: 'Return Received at Branch' });
+    } else {
+      d.statusUpdates.push({ status: 'Received at Branch' });
+      d.assignedTo = null;
+    }
+    await d.save();
   }
   res.sendStatus(200);
 });
@@ -385,7 +409,7 @@ app.post('/manager/reassign-delivery/:id', auth(['manager']), async (req, res) =
 });
 
 app.get('/manager/completed-deliveries', auth(['manager']), async (req, res) => {
-  res.json(await Delivery.find({ 
+  res.json(await Delivery.find({
     assignedByManager: req.user.userId,
     $or: [
       { 'statusUpdates.status': 'Delivered' },
@@ -413,7 +437,7 @@ app.get('/delivery/my-deliveries', auth(['delivery']), async (req, res) => {
 });
 
 app.get('/delivery/completed', auth(['delivery']), async (req, res) => {
-  res.json(await Delivery.find({ 
+  res.json(await Delivery.find({
     assignedTo: req.user.userId,
     $or: [
       { 'statusUpdates.status': 'Delivered' },
@@ -422,9 +446,26 @@ app.get('/delivery/completed', auth(['delivery']), async (req, res) => {
   }).sort({ updatedAt: -1 }).limit(100));
 });
 
+app.get('/delivery/summary', auth(['delivery']), async (req, res) => {
+  const deliveries = await Delivery.find({ assignedTo: req.user.userId });
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  let summary = { deliveredToday: 0, todayCashReceived: 0 };
+
+  deliveries.forEach(d => {
+    if (d.currentStatus === 'Delivered' && d.completedAt >= today) {
+      summary.deliveredToday++;
+      if (d.paymentMethod === 'COD' && d.codPaymentStatus === 'Paid - Cash') {
+        summary.todayCashReceived += d.billAmount || 0;
+      }
+    }
+  });
+
+  res.json(summary);
+});
+
 app.post('/delivery/update-status', auth(['delivery']), async (req, res) => {
-    await Delivery.findOneAndUpdate({ trackingId: req.body.trackingId, assignedTo: req.user.userId }, { $push: { statusUpdates: { status: req.body.status } } });
-    res.sendStatus(200);
+  await Delivery.findOneAndUpdate({ trackingId: req.body.trackingId, assignedTo: req.user.userId }, { $push: { statusUpdates: { status: req.body.status } } });
+  res.sendStatus(200);
 });
 
 app.post('/delivery/complete', auth(['delivery', 'admin', 'manager']), async (req, res) => {
@@ -434,6 +475,21 @@ app.post('/delivery/complete', auth(['delivery', 'admin', 'manager']), async (re
   d.statusUpdates.push({ status: 'Delivered' }); d.completedAt = new Date();
   if (d.paymentMethod === 'COD') d.codPaymentStatus = paymentType === 'online' ? 'Paid - Online' : 'Paid - Cash';
   await d.save(); syncSingleDeliveryToSheet(d._id, 'update').catch(console.error);
+  const [manager, admins, deliveryBoy] = await Promise.all([
+    d.assignedByManager ? User.findById(d.assignedByManager) : null,
+    User.find({ role: 'admin', isActive: true }),
+    d.assignedTo ? User.findById(d.assignedTo) : null
+  ]);
+  const paymentText = d.paymentMethod === 'COD'
+    ? `${d.codPaymentStatus === 'Paid - Online' ? 'COD paid online' : `Cash collected ₹${d.billAmount || 0}`}`
+    : 'Prepaid delivery completed';
+  const notifierName = deliveryBoy?.name || req.user.name || 'Delivery Boy';
+  const title = 'Delivery Completed';
+  const body = `${d.trackingId} delivered by ${notifierName}. ${paymentText}.`;
+  await Promise.allSettled([
+    sendNotificationToUser(manager, title, body, { tag: `delivery-complete-${d._id}`, link: 'https://sahyogdelivery.vercel.app/manager.html' }),
+    sendNotificationToUsers(admins, title, body, { tag: `delivery-complete-${d._id}`, link: 'https://sahyogdelivery.vercel.app/admin.html' })
+  ]);
   res.json({ success: true });
 });
 
