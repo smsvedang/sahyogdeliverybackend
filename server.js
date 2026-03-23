@@ -257,7 +257,15 @@ app.post('/admin/dispatch-bulk', auth(['admin']), async (req, res) => {
 });
 
 app.post('/admin/receive-bulk', auth(['admin']), async (req, res) => {
-  await Delivery.updateMany({ trackingId: { $in: req.body.trackingIds } }, { $push: { statusUpdates: { status: 'Received by Admin' } } });
+  const deliveries = await Delivery.find({ trackingId: { $in: req.body.trackingIds } });
+  for (let d of deliveries) {
+      if (d.currentStatus === 'Return Received at Branch' || d.currentStatus === 'Cancelled') {
+          d.statusUpdates.push({ status: 'Return Received at Head Office' });
+      } else {
+          d.statusUpdates.push({ status: 'Received by Admin' });
+      }
+      await d.save();
+  }
   res.sendStatus(200);
 });
 
@@ -335,7 +343,16 @@ app.get('/manager/all-pending-deliveries', auth(['manager']), async (req, res) =
 });
 
 app.post('/manager/receive-bulk', auth(['manager']), async (req, res) => {
-  await Delivery.updateMany({ trackingId: { $in: req.body.trackingIds } }, { $set: { assignedTo: null }, $push: { statusUpdates: { status: 'Received at Branch' } } });
+  const deliveries = await Delivery.find({ trackingId: { $in: req.body.trackingIds } });
+  for (let d of deliveries) {
+      if (d.currentStatus === 'Cancelled') {
+          d.statusUpdates.push({ status: 'Return Received at Branch' });
+      } else {
+          d.statusUpdates.push({ status: 'Received at Branch' });
+          d.assignedTo = null;
+      }
+      await d.save();
+  }
   res.sendStatus(200);
 });
 
