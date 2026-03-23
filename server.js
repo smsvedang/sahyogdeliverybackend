@@ -1,4 +1,4 @@
-// --- Sahyog Medical Delivery Backend (server.js) - v6.3 (Clean & Consolidated) ---
+// --- Sahyog Medical Delivery Backend (server.js) - v6.4 (Auto-Sync Enabled) ---
 
 import 'dotenv/config';
 import express from 'express';
@@ -180,6 +180,15 @@ app.post('/api/save-fcm-token', auth(), async (req, res) => {
   res.sendStatus(200);
 });
 
+app.post('/api/change-password', auth(), async (req, res) => {
+  const { oldPassword, newPassword } = req.body;
+  const u = await User.findById(req.user.userId);
+  if (!u || !(await bcrypt.compare(oldPassword, u.password))) return res.status(401).json({ message: 'Incorrect old password' });
+  u.password = await bcrypt.hash(newPassword, 10);
+  await u.save();
+  res.json({ message: 'Password changed successfully' });
+});
+
 app.use(express.static(path.join(__dirname)));
 app.get('/firebase-messaging-sw.js', (req, res) => {
   res.setHeader('Content-Type', 'application/javascript');
@@ -351,7 +360,10 @@ app.post('/manager/confirm-cash/:id', auth(['manager']), async (req, res) => {
 // --- Delivery Boy APIs ---
 
 app.get('/delivery/my-deliveries', auth(['delivery']), async (req, res) => {
-  res.json({ deliveries: await Delivery.find({ assignedTo: req.user.userId, 'statusUpdates.status': { $nin: ['Delivered', 'Cancelled'] } }).sort({ createdAt: -1 }) });
+  const q = { assignedTo: req.user.userId, 'statusUpdates.status': { $nin: ['Delivered', 'Cancelled'] } };
+  const deliveries = await Delivery.find(q).sort({ createdAt: -1 });
+  const totalDeliveries = await Delivery.countDocuments(q);
+  res.json({ deliveries, totalDeliveries });
 });
 
 app.post('/delivery/update-status', auth(['delivery']), async (req, res) => {
