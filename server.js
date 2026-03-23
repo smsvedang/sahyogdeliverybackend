@@ -322,6 +322,14 @@ app.get('/manager/assigned-pickups', auth(['manager']), async (req, res) => {
     res.json(list.filter(d => ['Received at Branch'].includes(d.currentStatus)));
 });
 
+app.get('/manager/expected-receive', auth(['manager']), async (req, res) => {
+    const list = await Delivery.find({ 
+        assignedByManager: req.user.userId, 
+        assignedTo: null 
+    }).sort({ createdAt: -1 });
+    res.json(list.filter(d => !['Received at Branch', 'Delivered', 'Cancelled'].includes(d.currentStatus)));
+});
+
 app.get('/manager/all-pending-deliveries', auth(['manager']), async (req, res) => {
   res.json(await Delivery.find({ assignedByManager: req.user.userId, 'statusUpdates.status': { $ne: 'Delivered' } }).populate('assignedTo', 'name').sort({ createdAt: -1 }));
 });
