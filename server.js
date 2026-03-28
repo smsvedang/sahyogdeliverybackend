@@ -93,6 +93,25 @@ function getISTTime() {
   return new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' });
 }
 
+function getISTDateRange(dateStr) {
+  const match = String(dateStr || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const [, year, month, day] = match;
+  return {
+    start: new Date(`${year}-${month}-${day}T00:00:00+05:30`),
+    end: new Date(`${year}-${month}-${day}T23:59:59.999+05:30`)
+  };
+}
+
+function getTodayISTDateString() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
+}
+
 // --- Databases & Models ---
 
 const MONGO_URI = process.env.MONGO_URI;
@@ -309,6 +328,132 @@ app.post('/admin/confirm-cash/:id', auth(['admin']), async (req, res) => {
 
 app.get('/admin/completed-deliveries', auth(['admin']), async (req, res) => {
   res.json(await Delivery.find({ 'statusUpdates.status': 'Delivered' }).sort({ completedAt: -1 }).limit(100));
+});
+
+app.get('/admin/daily-summary', auth(['admin']), async (req, res) => {
+  const selectedDate = req.query.date || getTodayISTDateString();
+  const range = getISTDateRange(selectedDate);
+  if (!range) return res.status(400).json({ message: 'Invalid date. Use YYYY-MM-DD.' });
+
+  const [{ deliveredToday, cancelledToday }, bookingsToday, cashReceivedToday, draftsToday, statusSnapshot] = await Promise.all([
+    Delivery.aggregate([
+      {
+        $facet: {
+          delivered: [
+            { $match: { completedAt: { $gte: range.start, $lte: range.end }, 'statusUpdates.status': 'Delivered' } },
+            { $count: 'count' }
+          ],
+          cancelled: [
+            {
+              $match: {
+                updatedAt: { $gte: range.start, $lte: range.end },
+                $expr: { $eq: [{ $arrayElemAt: ['$statusUpdates.status', -1] }, 'Cancelled'] }
+              }
+            },
+            { $count: 'count' }
+          ]
+        }
+      },
+      {
+        $project: {
+          deliveredToday: { $ifNull: [{ $arrayElemAt: ['$delivered.count', 0] }, 0] },
+          cancelledToday: { $ifNull: [{ $arrayElemAt: ['$cancelled.count', 0] }, 0] }
+        }
+      }
+    ]).then((rows) => rows[0] || { deliveredToday: 0, cancelledToday: 0 }),
+    Delivery.find({ createdAt: { $gte: range.start, $lte: range.end } }).populate('assignedByManager', 'name'),
+    Delivery.find({ cashReceivedAt: { $gte: range.start, $lte: range.end } }).populate('assignedByManager', 'name'),
+    DraftOrder.find({ createdAt: { $gte: range.start, $lte: range.end }, pincode: TARGET_MARGMART_PINCODE }),
+    Delivery.find({}).populate('assignedByManager', 'name').sort({ createdAt: -1 })
+  ]);
+
+  const bookedToday = bookingsToday.length;
+  const codBookings = bookingsToday.filter(d => d.paymentMethod === 'COD');
+  const prepaidBookings = bookingsToday.filter(d => d.paymentMethod !== 'COD');
+  const codBookedAmount = codBookings.reduce((sum, d) => sum + (Number(d.billAmount) || 0), 0);
+  const cashCollectedToday = cashReceivedToday
+    .filter(d => d.paymentMethod === 'COD' && d.codPaymentStatus === 'Paid - Cash')
+    .reduce((sum, d) => sum + (Number(d.billAmount) || 0), 0);
+  const onlineCollectedToday = statusSnapshot
+    .filter(d => d.paymentMethod === 'COD' && d.codPaymentStatus === 'Paid - Online' && d.completedAt && d.completedAt >= range.start && d.completedAt <= range.end)
+    .reduce((sum, d) => sum + (Number(d.billAmount) || 0), 0);
+
+  const pendingCashOrders = statusSnapshot.filter(d =>
+    d.paymentMethod === 'COD' &&
+    d.codPaymentStatus === 'Paid - Cash' &&
+    !d.cashReceivedByAdmin &&
+    d.statusUpdates?.some(s => s.status === 'Delivered')
+  );
+
+  const managerMap = new Map();
+  for (const d of statusSnapshot) {
+    const managerName = d.assignedByManager?.name || 'Unassigned';
+    if (!managerMap.has(managerName)) {
+      managerMap.set(managerName, {
+        managerName,
+        booked: 0,
+        delivered: 0,
+        cancelled: 0,
+        codBookedAmount: 0,
+        cashReceivedAmount: 0
+      });
+    }
+    const entry = managerMap.get(managerName);
+    if (d.createdAt >= range.start && d.createdAt <= range.end) {
+      entry.booked += 1;
+      if (d.paymentMethod === 'COD') entry.codBookedAmount += Number(d.billAmount) || 0;
+    }
+    if (d.currentStatus === 'Delivered' && d.completedAt && d.completedAt >= range.start && d.completedAt <= range.end) entry.delivered += 1;
+    if (d.currentStatus === 'Cancelled' && d.updatedAt >= range.start && d.updatedAt <= range.end) entry.cancelled += 1;
+    if (d.cashReceivedAt && d.cashReceivedAt >= range.start && d.cashReceivedAt <= range.end && d.paymentMethod === 'COD' && d.codPaymentStatus === 'Paid - Cash') {
+      entry.cashReceivedAmount += Number(d.billAmount) || 0;
+    }
+  }
+
+  const snapshotCounts = statusSnapshot.reduce((acc, d) => {
+    const key = d.currentStatus || 'Unknown';
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, {});
+
+  res.json({
+    date: selectedDate,
+    targetPincode: TARGET_MARGMART_PINCODE,
+    metrics: {
+      bookedToday,
+      deliveredToday,
+      cancelledToday,
+      completedToday: deliveredToday + cancelledToday,
+      draftsImportedToday: draftsToday.length,
+      codBookingsToday: codBookings.length,
+      prepaidBookingsToday: prepaidBookings.length,
+      codBookedAmount,
+      cashCollectedToday,
+      onlineCollectedToday,
+      pendingCashCount: pendingCashOrders.length,
+      pendingCashAmount: pendingCashOrders.reduce((sum, d) => sum + (Number(d.billAmount) || 0), 0)
+    },
+    managerBreakdown: Array.from(managerMap.values()).sort((a, b) => b.booked - a.booked || b.cashReceivedAmount - a.cashReceivedAmount),
+    statusSnapshot: Object.entries(snapshotCounts)
+      .map(([status, count]) => ({ status, count }))
+      .sort((a, b) => b.count - a.count),
+    recentBookings: bookingsToday.slice(0, 10).map(d => ({
+      trackingId: d.trackingId,
+      customerName: d.customerName,
+      paymentMethod: d.paymentMethod,
+      billAmount: d.billAmount || 0,
+      managerName: d.assignedByManager?.name || 'Unassigned',
+      createdAt: d.createdAt,
+      currentStatus: d.currentStatus
+    })),
+    recentCashClosures: cashReceivedToday.slice(0, 10).map(d => ({
+      trackingId: d.trackingId,
+      customerName: d.customerName,
+      managerName: d.assignedByManager?.name || 'Unassigned',
+      billAmount: d.billAmount || 0,
+      cashReceivedAt: d.cashReceivedAt
+    }))
+  });
 });
 
 app.post('/admin/deliveries/bulk-cancel', auth(['admin']), async (req, res) => {
@@ -630,13 +775,13 @@ function extractEmailText(payload) {
 
 async function fetchMargmartEmails() {
   try {
-    const missing = ['G_CLIENT_ID', 'G_CLIENT_SECRET', 'G_REFRESH_TOKEN'].filter((key) => !process.env[key]);
+    const missing = ['GMAIL_CLIENT_ID', 'GMAIL_CLIENT_SECRET', 'GMAIL_REFRESH_TOKEN'].filter((key) => !process.env[key]);
     if (missing.length) {
       throw new Error(`Missing Gmail OAuth config: ${missing.join(', ')}`);
     }
 
-    const auth = new google.auth.OAuth2(process.env.G_CLIENT_ID, process.env.G_CLIENT_SECRET);
-    auth.setCredentials({ refresh_token: process.env.G_REFRESH_TOKEN });
+    const auth = new google.auth.OAuth2(process.env.GMAIL_CLIENT_ID, process.env.GMAIL_CLIENT_SECRET);
+    auth.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
     const gmail = google.gmail({ version: 'v1', auth });
     const res = await gmail.users.messages.list({ userId: 'me', q: 'from:noreply@margmart.com', maxResults: 20 });
     if (!res.data.messages?.length) {
