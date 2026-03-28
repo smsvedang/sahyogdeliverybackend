@@ -630,6 +630,11 @@ function extractEmailText(payload) {
 
 async function fetchMargmartEmails() {
   try {
+    const missing = ['G_CLIENT_ID', 'G_CLIENT_SECRET', 'G_REFRESH_TOKEN'].filter((key) => !process.env[key]);
+    if (missing.length) {
+      throw new Error(`Missing Gmail OAuth config: ${missing.join(', ')}`);
+    }
+
     const auth = new google.auth.OAuth2(process.env.G_CLIENT_ID, process.env.G_CLIENT_SECRET);
     auth.setCredentials({ refresh_token: process.env.G_REFRESH_TOKEN });
     const gmail = google.gmail({ version: 'v1', auth });
