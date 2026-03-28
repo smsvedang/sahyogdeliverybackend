@@ -145,6 +145,7 @@ const BusinessSettings = mongoose.model('BusinessSettings', new mongoose.Schema(
 
 const DraftOrder = mongoose.model('DraftOrder', new mongoose.Schema({
   orderNumber: { type: String, unique: true }, customerName: String, phone: String, address: String, amount: Number,
+  pincode: String,
   status: { type: String, enum: ['DRAFT', 'CONVERTED'], default: 'DRAFT' }
 }, { timestamps: true }));
 
@@ -319,8 +320,10 @@ app.post('/admin/deliveries/bulk-delete', auth(['admin']), async (req, res) => {
   await Delivery.deleteMany({ _id: { $in: req.body.deliveryIds } }); res.sendStatus(200);
 });
 
+const TARGET_MARGMART_PINCODE = '458110';
+
 app.get('/api/drafts', auth(['admin']), async (req, res) => {
-  res.json(await DraftOrder.find({ status: 'DRAFT' }).sort({ createdAt: -1 }));
+  res.json(await DraftOrder.find({ status: 'DRAFT', pincode: TARGET_MARGMART_PINCODE }).sort({ createdAt: -1 }));
 });
 
 app.delete('/api/drafts/:id', auth(['admin']), async (req, res) => {
@@ -565,36 +568,115 @@ setTimeout(initialSetup, 5000);
 
 // --- Margmart Email Logic ---
 function extractPincode(addr) { const m = addr?.match(/\b\d{6}\b/); return m ? m[0] : null; }
+function decodeHtmlEntities(text) {
+  return (text || '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+}
+
+function normalizeMargmartBody(body) {
+  return decodeHtmlEntities(body)
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<(br|\/p|\/div|\/tr|\/table|\/td|\/th|\/li)>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\r/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/\n{2,}/g, '\n')
+    .trim();
+}
+
+function extractField(text, regex) {
+  return text.match(regex)?.[1]?.replace(/\s+/g, ' ')?.trim() || '';
+}
+
 function parseMargmartEmail(body) {
+  const text = normalizeMargmartBody(body);
   return {
-    orderNumber: body.match(/Order Number\s*:\s*(.+)/i)?.[1]?.trim(),
-    customerName: body.match(/Customer's Name\s*:\s*(.+)/i)?.[1]?.trim(),
-    phone: body.match(/Contact\s*:\s*(\d+)/i)?.[1]?.trim(),
-    address: body.match(/Shipping Address\s*:\s*(.+)/i)?.[1]?.trim(),
-    amount: Number(body.match(/Total Amount\s*:\s*([\d.]+)/i)?.[1]),
+    orderNumber: extractField(text, /(?:^|\n)\s*Order Number\s*:?\s*([^\n]+)/i),
+    customerName: extractField(text, /(?:^|\n)\s*Customer'?s Name\s*:?\s*([^\n]+)/i),
+    phone: extractField(text, /(?:^|\n)\s*Contact\s*:?\s*([0-9+\-\s]+)/i).replace(/\D/g, ''),
+    address: extractField(text, /(?:^|\n)\s*Shipping Address\s*:?\s*([\s\S]*?)(?=\n(?:Total number of items|Total Amount|Delivery Instruction|Shipping Type)\s*:|$)/i),
+    amount: Number(extractField(text, /(?:^|\n)\s*Total Amount\s*:?\s*([0-9.]+)/i)),
   };
+}
+
+function decodeGmailPartData(data) {
+  if (!data) return '';
+  return Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+}
+
+function extractEmailText(payload) {
+  if (!payload) return '';
+
+  const bodyData = decodeGmailPartData(payload.body?.data);
+  if ((payload.mimeType === 'text/plain' || !payload.parts?.length) && bodyData.trim()) {
+    return bodyData;
+  }
+
+  for (const part of payload.parts || []) {
+    const text = extractEmailText(part);
+    if (text.trim()) return text;
+  }
+
+  return bodyData;
 }
 
 async function fetchMargmartEmails() {
   try {
-    const { google } = await import('googleapis');
     const auth = new google.auth.OAuth2(process.env.G_CLIENT_ID, process.env.G_CLIENT_SECRET);
     auth.setCredentials({ refresh_token: process.env.G_REFRESH_TOKEN });
     const gmail = google.gmail({ version: 'v1', auth });
-    const res = await gmail.users.messages.list({ userId: 'me', q: 'from:margmart.com "Order Confirmation"', maxResults: 10 });
-    if (!res.data.messages) return;
+    const res = await gmail.users.messages.list({ userId: 'me', q: 'from:noreply@margmart.com', maxResults: 20 });
+    if (!res.data.messages?.length) {
+      return { inserted: 0, skipped: 0, totalMessages: 0 };
+    }
+
+    let inserted = 0;
+    let skipped = 0;
+
     for (const msg of res.data.messages) {
       const g = await gmail.users.messages.get({ userId: 'me', id: msg.id });
-      const body = Buffer.from(g.data.payload.parts?.[0]?.body?.data || g.data.payload.body?.data || '', 'base64').toString();
+      const body = extractEmailText(g.data.payload);
       const d = parseMargmartEmail(body);
-      if (d.orderNumber && !await DraftOrder.findOne({ orderNumber: d.orderNumber })) {
-        await new DraftOrder({ ...d, pincode: extractPincode(d.address) }).save();
+      const pincode = extractPincode(d.address);
+
+      if (!d.orderNumber || pincode !== TARGET_MARGMART_PINCODE) {
+        skipped++;
+        continue;
+      }
+
+      if (!await DraftOrder.findOne({ orderNumber: d.orderNumber })) {
+        await new DraftOrder({ ...d, pincode }).save();
+        inserted++;
+      } else {
+        skipped++;
       }
     }
-  } catch (e) { console.error("Email fetch failed", e.message); }
+
+    return { inserted, skipped, totalMessages: res.data.messages.length };
+  } catch (e) {
+    console.error("Email fetch failed", e);
+    throw e;
+  }
 }
 
 cron.schedule("*/5 * * * *", fetchMargmartEmails);
 app.post('/api/fetch-margmart-orders', auth(['admin']), async (req, res) => {
-  await fetchMargmartEmails(); res.json({ message: 'Fetched' });
+  try {
+    const result = await fetchMargmartEmails();
+    res.json({
+      message: `Margmart sync complete. ${result.inserted} draft(s) imported for pincode ${TARGET_MARGMART_PINCODE}.`,
+      ...result,
+      targetPincode: TARGET_MARGMART_PINCODE
+    });
+  } catch (e) {
+    res.status(500).json({ message: `Margmart sync failed: ${e.message}` });
+  }
 });
