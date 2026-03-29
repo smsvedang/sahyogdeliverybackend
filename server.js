@@ -519,7 +519,13 @@ app.get('/manager/rto-parcels', auth(['manager']), async (req, res) => {
 });
 
 app.get('/manager/all-pending-deliveries', auth(['manager']), async (req, res) => {
-  res.json(await Delivery.find({ assignedByManager: req.user.userId, 'statusUpdates.status': { $ne: 'Delivered' } }).populate('assignedTo', 'name').sort({ createdAt: -1 }));
+  const activeStatuses = ['Boy Assigned', 'Picked Up', 'Out for Delivery'];
+  res.json(await Delivery.find({
+    assignedByManager: req.user.userId,
+    assignedTo: { $ne: null },
+    $or: activeStatuses.map(status => ({ 'statusUpdates.status': status })),
+    'statusUpdates.status': { $nin: ['Delivered', 'Cancelled'] }
+  }).populate('assignedTo', 'name').sort({ createdAt: -1 }));
 });
 
 app.post('/manager/receive-bulk', auth(['manager']), async (req, res) => {
@@ -545,7 +551,23 @@ app.post('/manager/bulk-assign-deliveries', auth(['manager']), async (req, res) 
 
 app.post('/manager/reassign-delivery/:id', auth(['manager']), async (req, res) => {
   const boy = await User.findById(req.body.newDeliveryBoyId);
-  await Delivery.findOneAndUpdate({ _id: req.params.id, assignedByManager: req.user.userId }, { $set: { assignedTo: boy._id, assignedBoyDetails: { name: boy.name, phone: boy.phone } }, $push: { statusUpdates: { status: 'Boy Assigned', remarks: 'Reassigned' } } });
+  if (!boy) return res.status(404).json({ message: 'Boy not found' });
+  const activeStatuses = ['Boy Assigned', 'Picked Up', 'Out for Delivery'];
+  const delivery = await Delivery.findOne({
+    _id: req.params.id,
+    assignedByManager: req.user.userId,
+    assignedTo: { $ne: null },
+    $or: activeStatuses.map(status => ({ 'statusUpdates.status': status })),
+    'statusUpdates.status': { $nin: ['Delivered', 'Cancelled'] }
+  });
+  if (!delivery || !activeStatuses.includes(delivery.currentStatus)) {
+    return res.status(400).json({ message: 'Reassign allowed only for active deliveries after branch assignment.' });
+  }
+
+  await Delivery.findByIdAndUpdate(req.params.id, {
+    $set: { assignedTo: boy._id, assignedBoyDetails: { name: boy.name, phone: boy.phone } },
+    $push: { statusUpdates: { status: 'Boy Assigned', remarks: 'Reassigned' } }
+  });
   res.sendStatus(200);
 });
 
