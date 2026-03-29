@@ -188,6 +188,13 @@ async function syncSingleDeliveryToSheet(id, action) {
   } catch (e) { console.error("Sync error", e.message); }
 }
 
+async function syncManyDeliveriesToSheet(ids, action = 'update') {
+  if (!sheets || !Array.isArray(ids) || !ids.length) return;
+  await Promise.allSettled(
+    [...new Set(ids.map(id => String(id)).filter(Boolean))].map(id => syncSingleDeliveryToSheet(id, action))
+  );
+}
+
 // --- Middleware & Auth ---
 
 const auth = (roles = []) => (req, res, next) => {
@@ -236,6 +243,7 @@ app.patch('/manager/assign-delivery/:id', auth(['manager']), async (req, res) =>
   if (!boy) return res.status(404).json({ message: 'Boy not found' });
   const d = await Delivery.findOneAndUpdate({ _id: req.params.id, assignedByManager: req.user.userId }, { $set: { assignedTo: boy._id, assignedBoyDetails: { name: boy.name, phone: boy.phone }, assignedAt: new Date() }, $push: { statusUpdates: { status: 'Boy Assigned' } } }, { new: true });
   if (boy.fcmTokens?.length) boy.fcmTokens.forEach(t => sendNotification(t, "Naya Parcel!", `Tracking ID: ${d.trackingId}`, boy._id));
+  syncSingleDeliveryToSheet(d._id, 'update').catch(console.error);
   res.sendStatus(200);
 });
 
@@ -293,7 +301,9 @@ app.post('/book', auth(['admin']), async (req, res) => {
 });
 
 app.post('/admin/dispatch-bulk', auth(['admin']), async (req, res) => {
+  const deliveries = await Delivery.find({ trackingId: { $in: req.body.trackingIds } }, '_id');
   await Delivery.updateMany({ trackingId: { $in: req.body.trackingIds } }, { $push: { statusUpdates: { status: 'Dispatched from Head Office' } } });
+  syncManyDeliveriesToSheet(deliveries.map(d => d._id), 'update').catch(console.error);
   res.sendStatus(200);
 });
 
@@ -307,6 +317,7 @@ app.post('/admin/receive-bulk', auth(['admin']), async (req, res) => {
     }
     await d.save();
   }
+  syncManyDeliveriesToSheet(deliveries.map(d => d._id), 'update').catch(console.error);
   res.sendStatus(200);
 });
 
@@ -323,6 +334,7 @@ app.get('/admin/pending-cash-orders', auth(['admin']), async (req, res) => {
 
 app.post('/admin/confirm-cash/:id', auth(['admin']), async (req, res) => {
   await Delivery.findByIdAndUpdate(req.params.id, { cashReceivedByAdmin: true, cashReceivedAt: new Date() });
+  syncSingleDeliveryToSheet(req.params.id, 'update').catch(console.error);
   res.sendStatus(200);
 });
 
@@ -451,6 +463,7 @@ app.get('/admin/daily-summary', auth(['admin']), async (req, res) => {
 
 app.post('/admin/deliveries/bulk-cancel', auth(['admin']), async (req, res) => {
   await Delivery.updateMany({ _id: { $in: req.body.deliveryIds } }, { $push: { statusUpdates: { status: 'Cancelled' } } });
+  syncManyDeliveriesToSheet(req.body.deliveryIds, 'update').catch(console.error);
   res.sendStatus(200);
 });
 
@@ -539,6 +552,7 @@ app.post('/manager/receive-bulk', auth(['manager']), async (req, res) => {
     }
     await d.save();
   }
+  syncManyDeliveriesToSheet(deliveries.map(d => d._id), 'update').catch(console.error);
   res.sendStatus(200);
 });
 
@@ -546,6 +560,7 @@ app.post('/manager/bulk-assign-deliveries', auth(['manager']), async (req, res) 
   const boy = await User.findById(req.body.assignedBoyId);
   await Delivery.updateMany({ _id: { $in: req.body.deliveryIds }, assignedByManager: req.user.userId }, { $set: { assignedTo: boy._id, assignedBoyDetails: { name: boy.name, phone: boy.phone } }, $push: { statusUpdates: { status: 'Boy Assigned' } } });
   if (boy.fcmTokens?.length) boy.fcmTokens.forEach(t => sendNotification(t, "Naye Parcels!", "Aapko naye parcels assign hue hain", boy._id));
+  syncManyDeliveriesToSheet(req.body.deliveryIds, 'update').catch(console.error);
   res.sendStatus(200);
 });
 
@@ -568,6 +583,7 @@ app.post('/manager/reassign-delivery/:id', auth(['manager']), async (req, res) =
     $set: { assignedTo: boy._id, assignedBoyDetails: { name: boy.name, phone: boy.phone } },
     $push: { statusUpdates: { status: 'Boy Assigned', remarks: 'Reassigned' } }
   });
+  syncSingleDeliveryToSheet(req.params.id, 'update').catch(console.error);
   res.sendStatus(200);
 });
 
@@ -587,6 +603,7 @@ app.get('/manager/pending-cash-orders', auth(['manager']), async (req, res) => {
 
 app.post('/manager/confirm-cash/:id', auth(['manager']), async (req, res) => {
   await Delivery.findOneAndUpdate({ _id: req.params.id, assignedByManager: req.user.userId }, { cashReceivedByAdmin: true, cashReceivedAt: new Date() });
+  syncSingleDeliveryToSheet(req.params.id, 'update').catch(console.error);
   res.sendStatus(200);
 });
 
@@ -627,7 +644,8 @@ app.get('/delivery/summary', auth(['delivery']), async (req, res) => {
 });
 
 app.post('/delivery/update-status', auth(['delivery']), async (req, res) => {
-  await Delivery.findOneAndUpdate({ trackingId: req.body.trackingId, assignedTo: req.user.userId }, { $push: { statusUpdates: { status: req.body.status } } });
+  const delivery = await Delivery.findOneAndUpdate({ trackingId: req.body.trackingId, assignedTo: req.user.userId }, { $push: { statusUpdates: { status: req.body.status } } }, { new: true });
+  if (delivery) syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
   res.sendStatus(200);
 });
 
@@ -697,7 +715,9 @@ app.post('/delivery/confirm-cancel', auth(['delivery']), async (req, res) => {
   const ns = reason === 'Request for reschedule' ? 'Rescheduled' : 'Cancelled';
   d.statusUpdates.push({ status: ns, remarks: reason }); d.cancellationOtp = null;
   if (ns === 'Rescheduled') { d.assignedTo = null; d.assignedBoyDetails = null; }
-  await d.save(); res.json({ success: true });
+  await d.save();
+  syncSingleDeliveryToSheet(d._id, 'update').catch(console.error);
+  res.json({ success: true });
 });
 
 // --- Public & Settings ---
@@ -739,7 +759,10 @@ app.post("/api/cashfree-webhook", async (req, res) => {
     const ev = JSON.parse(req.body.toString());
     if (ev.type === "PAYMENT_SUCCESS_WEBHOOK") {
       const tid = ev?.data?.order?.order_id.match(/^COD_(.+)_\d+$/)?.[1] || ev?.data?.order?.customer_details?.customer_id;
-      if (tid) await Delivery.findOneAndUpdate({ trackingId: tid }, { codPaymentStatus: "Paid - Online" });
+      if (tid) {
+        const delivery = await Delivery.findOneAndUpdate({ trackingId: tid }, { codPaymentStatus: "Paid - Online" }, { new: true });
+        if (delivery) syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
+      }
     }
   }
   res.sendStatus(200);
