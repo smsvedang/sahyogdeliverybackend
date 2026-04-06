@@ -168,6 +168,30 @@ const DraftOrder = mongoose.model('DraftOrder', new mongoose.Schema({
   status: { type: String, enum: ['DRAFT', 'CONVERTED'], default: 'DRAFT' }
 }, { timestamps: true }));
 
+const Log = mongoose.model('Log', new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  userName: String,
+  role: String,
+  action: String,
+  details: String,
+}, { timestamps: true }));
+// TTL Index for 3 days (3 * 24 * 60 * 60 = 259200 seconds)
+Log.schema.index({ createdAt: 1 }, { expireAfterSeconds: 259200 });
+
+async function createLog(user, action, details = "") {
+  try {
+    await new Log({
+      userId: user.userId || user._id,
+      userName: user.name,
+      role: user.role,
+      action,
+      details
+    }).save();
+  } catch (err) {
+    console.error("Logging error:", err);
+  }
+}
+
 // --- Google Sheets Sync ---
 const sheets = process.env.GOOGLE_SHEET_ID ? google.sheets({ version: 'v4', auth: new google.auth.GoogleAuth({ credentials: { client_email: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL, private_key: process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, '\n') }, scopes: ['https://www.googleapis.com/auth/spreadsheets'] }) }) : null;
 
@@ -214,6 +238,7 @@ app.post('/api/login', async (req, res) => {
   const u = await User.findOne({ email: email.toLowerCase() });
   if (!u || !u.isActive || !(await bcrypt.compare(password, u.password))) return res.status(401).json({ message: 'Invalid credentials' });
   const token = jwt.sign({ userId: u._id, role: u.role, name: u.name }, JWT_SECRET, { expiresIn: '7d' });
+  await createLog(u, 'Login', 'Logged into the system');
   res.json({ token, name: u.name, role: u.role });
 });
 
@@ -244,6 +269,7 @@ app.patch('/manager/assign-delivery/:id', auth(['manager']), async (req, res) =>
   const d = await Delivery.findOneAndUpdate({ _id: req.params.id, assignedByManager: req.user.userId }, { $set: { assignedTo: boy._id, assignedBoyDetails: { name: boy.name, phone: boy.phone }, assignedAt: new Date() }, $push: { statusUpdates: { status: 'Boy Assigned' } } }, { new: true });
   if (boy.fcmTokens?.length) boy.fcmTokens.forEach(t => sendNotification(t, "Naya Parcel!", `Tracking ID: ${d.trackingId}`, boy._id));
   syncSingleDeliveryToSheet(d._id, 'update').catch(console.error);
+  await createLog(req.user, 'Parcel Assigned', `Assigned ${d.trackingId} to ${boy.name}`);
   res.sendStatus(200);
 });
 
@@ -258,6 +284,15 @@ app.get('/admin/users', auth(['admin']), async (req, res) => {
   res.json(await User.find({}, '-password').populate('createdByManager', 'name'));
 });
 
+app.get('/admin/logs', auth(['admin']), async (req, res) => {
+  try {
+    const logs = await Log.find().sort({ createdAt: -1 }).limit(500);
+    res.json(logs);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch logs" });
+  }
+});
+
 app.get('/admin/managers', auth(['admin']), async (req, res) => {
   res.json(await User.find({ role: 'manager', isActive: true }, 'name _id'));
 });
@@ -265,7 +300,8 @@ app.get('/admin/managers', auth(['admin']), async (req, res) => {
 app.post('/admin/create-user', auth(['admin']), async (req, res) => {
   const { name, email, password, phone, role, managerId } = req.body;
   const hash = await bcrypt.hash(password, 10);
-  await new User({ name, email: email.toLowerCase(), password: hash, phone, role, createdByManager: role === 'delivery' ? managerId : null }).save();
+  const newUser = await new User({ name, email: email.toLowerCase(), password: hash, phone, role, createdByManager: role === 'delivery' ? managerId : null }).save();
+  await createLog(req.user, 'Create User', `Created user ${name} (${role})`);
   res.sendStatus(201);
 });
 
@@ -277,12 +313,18 @@ app.patch('/admin/user/:id', auth(['admin']), async (req, res) => {
     update.createdByManager = role === 'delivery' ? (managerId || null) : null;
   }
   if (password) update.password = await bcrypt.hash(password, 10);
-  await User.findByIdAndUpdate(req.params.id, update);
+  const updatedUser = await User.findByIdAndUpdate(req.params.id, update, { new: true });
+  await createLog(req.user, 'Update User', `Updated details for ${updatedUser.name}`);
   res.sendStatus(200);
 });
 
 app.delete('/admin/user/:id', auth(['admin']), async (req, res) => {
-  await User.findByIdAndDelete(req.params.id); res.sendStatus(200);
+  const u = await User.findById(req.params.id);
+  if (u) {
+    await createLog(req.user, 'Delete User', `Deleted user ${u.name}`);
+    await User.findByIdAndDelete(req.params.id);
+  }
+  res.sendStatus(200);
 });
 
 app.patch('/admin/user/:id/toggle-active', auth(['admin']), async (req, res) => {
@@ -297,6 +339,7 @@ app.post('/book', auth(['admin']), async (req, res) => {
   await d.save();
   if (draftId) await DraftOrder.findByIdAndUpdate(draftId, { status: 'CONVERTED' });
   syncSingleDeliveryToSheet(d._id, 'create').catch(console.error);
+  await createLog(req.user, 'Book Courier', `Booked courier for ${name} [${tid}]`);
   res.status(201).json({ trackingId: tid, otp: d.otp });
 });
 
@@ -304,6 +347,7 @@ app.post('/admin/dispatch-bulk', auth(['admin']), async (req, res) => {
   const deliveries = await Delivery.find({ trackingId: { $in: req.body.trackingIds } }, '_id');
   await Delivery.updateMany({ trackingId: { $in: req.body.trackingIds } }, { $push: { statusUpdates: { status: 'Dispatched from Head Office' } } });
   syncManyDeliveriesToSheet(deliveries.map(d => d._id), 'update').catch(console.error);
+  await createLog(req.user, 'HO Bulk Dispatch', `Dispatched ${req.body.trackingIds.length} parcels from HO`);
   res.sendStatus(200);
 });
 
@@ -318,6 +362,7 @@ app.post('/admin/receive-bulk', auth(['admin']), async (req, res) => {
     await d.save();
   }
   syncManyDeliveriesToSheet(deliveries.map(d => d._id), 'update').catch(console.error);
+  await createLog(req.user, 'Admin Bulk Receive', `Received ${req.body.trackingIds.length} parcels at Admin`);
   res.sendStatus(200);
 });
 
@@ -333,8 +378,9 @@ app.get('/admin/pending-cash-orders', auth(['admin']), async (req, res) => {
 });
 
 app.post('/admin/confirm-cash/:id', auth(['admin']), async (req, res) => {
-  await Delivery.findByIdAndUpdate(req.params.id, { cashReceivedByAdmin: true, cashReceivedAt: new Date() });
+  const d = await Delivery.findByIdAndUpdate(req.params.id, { cashReceivedByAdmin: true, cashReceivedAt: new Date() });
   syncSingleDeliveryToSheet(req.params.id, 'update').catch(console.error);
+  await createLog(req.user, 'Confirm Cash', `Confirmed cash for ${d.trackingId}`);
   res.sendStatus(200);
 });
 
@@ -507,6 +553,7 @@ app.get('/manager/my-boys', auth(['manager']), async (req, res) => {
 app.post('/manager/create-delivery-boy', auth(['manager']), async (req, res) => {
   const hash = await bcrypt.hash(req.body.password, 10);
   await new User({ name: req.body.name, email: req.body.email.toLowerCase(), password: hash, phone: req.body.phone, role: 'delivery', createdByManager: req.user.userId }).save();
+  await createLog(req.user, 'Create Delivery Boy', `Created user ${req.body.name}`);
   res.sendStatus(201);
 });
 
@@ -553,6 +600,7 @@ app.post('/manager/receive-bulk', auth(['manager']), async (req, res) => {
     await d.save();
   }
   syncManyDeliveriesToSheet(deliveries.map(d => d._id), 'update').catch(console.error);
+  await createLog(req.user, 'Manager Bulk Receive', `Received ${req.body.trackingIds.length} parcels at Branch`);
   res.sendStatus(200);
 });
 
@@ -561,6 +609,7 @@ app.post('/manager/bulk-assign-deliveries', auth(['manager']), async (req, res) 
   await Delivery.updateMany({ _id: { $in: req.body.deliveryIds }, assignedByManager: req.user.userId }, { $set: { assignedTo: boy._id, assignedBoyDetails: { name: boy.name, phone: boy.phone } }, $push: { statusUpdates: { status: 'Boy Assigned' } } });
   if (boy.fcmTokens?.length) boy.fcmTokens.forEach(t => sendNotification(t, "Naye Parcels!", "Aapko naye parcels assign hue hain", boy._id));
   syncManyDeliveriesToSheet(req.body.deliveryIds, 'update').catch(console.error);
+  await createLog(req.user, 'Manager Bulk Assign', `Assigned ${req.body.deliveryIds.length} parcels to ${boy.name}`);
   res.sendStatus(200);
 });
 
@@ -584,6 +633,7 @@ app.post('/manager/reassign-delivery/:id', auth(['manager']), async (req, res) =
     $push: { statusUpdates: { status: 'Boy Assigned', remarks: 'Reassigned' } }
   });
   syncSingleDeliveryToSheet(req.params.id, 'update').catch(console.error);
+  await createLog(req.user, 'Manager Reassign', `Reassigned parcel to ${boy.name}`);
   res.sendStatus(200);
 });
 
@@ -645,7 +695,10 @@ app.get('/delivery/summary', auth(['delivery']), async (req, res) => {
 
 app.post('/delivery/update-status', auth(['delivery']), async (req, res) => {
   const delivery = await Delivery.findOneAndUpdate({ trackingId: req.body.trackingId, assignedTo: req.user.userId }, { $push: { statusUpdates: { status: req.body.status } } }, { new: true });
-  if (delivery) syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
+  if (delivery) {
+    syncSingleDeliveryToSheet(delivery._id, 'update').catch(console.error);
+    await createLog(req.user, 'Status Update', `Updated ${delivery.trackingId} to ${req.body.status}`);
+  }
   res.sendStatus(200);
 });
 
@@ -656,6 +709,7 @@ app.post('/delivery/complete', auth(['delivery', 'admin', 'manager']), async (re
   d.statusUpdates.push({ status: 'Delivered' }); d.completedAt = new Date();
   if (d.paymentMethod === 'COD') d.codPaymentStatus = paymentType === 'online' ? 'Paid - Online' : 'Paid - Cash';
   await d.save(); syncSingleDeliveryToSheet(d._id, 'update').catch(console.error);
+  await createLog(req.user, 'Delivery Completed', `Completed delivery for ${d.trackingId}`);
   const [manager, admins, deliveryBoy] = await Promise.all([
     d.assignedByManager ? User.findById(d.assignedByManager) : null,
     User.find({ role: 'admin', isActive: true }),
@@ -717,6 +771,7 @@ app.post('/delivery/confirm-cancel', auth(['delivery']), async (req, res) => {
   if (ns === 'Rescheduled') { d.assignedTo = null; d.assignedBoyDetails = null; }
   await d.save();
   syncSingleDeliveryToSheet(d._id, 'update').catch(console.error);
+  await createLog(req.user, 'Parcel Cancelled/Rescheduled', `${ns} [${d.trackingId}]: ${reason}`);
   res.json({ success: true });
 });
 
