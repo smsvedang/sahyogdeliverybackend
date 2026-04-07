@@ -178,6 +178,13 @@ const Log = mongoose.model('Log', new mongoose.Schema({
 // TTL Index for 3 days (3 * 24 * 60 * 60 = 259200 seconds)
 Log.schema.index({ createdAt: 1 }, { expireAfterSeconds: 259200 });
 
+const Customer = mongoose.model('Customer', new mongoose.Schema({
+  name: { type: String, required: true },
+  phone: { type: String, required: true, unique: true },
+  address: { type: String, required: true },
+  lastOrderAt: { type: Date, default: Date.now }
+}, { timestamps: true }));
+
 async function createLog(user, action, details = "") {
   try {
     await new Log({
@@ -337,10 +344,52 @@ app.post('/book', auth(['admin']), async (req, res) => {
   const tid = 'SAHYOG' + Date.now().toString().slice(-6);
   const d = new Delivery({ customerName: name, customerAddress: address, customerPhone: phone, trackingId: tid, otp: Math.floor(1000 + Math.random() * 9000).toString(), paymentMethod, billAmount, assignedByManager: managerId, statusUpdates: [{ status: 'Booked' }], codPaymentStatus: paymentMethod === 'Prepaid' ? 'Not Applicable' : 'Pending' });
   await d.save();
+
+  // Save or Update Customer Info
+  try {
+    await Customer.findOneAndUpdate(
+      { phone },
+      { name, address, lastOrderAt: new Date() },
+      { upsert: true, new: true }
+    );
+  } catch (err) {
+    console.error("Error saving customer info:", err);
+  }
+
   if (draftId) await DraftOrder.findByIdAndUpdate(draftId, { status: 'CONVERTED' });
   syncSingleDeliveryToSheet(d._id, 'create').catch(console.error);
   await createLog(req.user, 'Book Courier', `Booked courier for ${name} [${tid}]`);
   res.status(201).json({ trackingId: tid, otp: d.otp });
+});
+
+app.get('/admin/customers', auth(['admin']), async (req, res) => {
+  try {
+    const customers = await Customer.find().sort({ lastOrderAt: -1 });
+    res.json(customers);
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch customers" });
+  }
+});
+
+app.get('/admin/customer/:phone', auth(['admin']), async (req, res) => {
+  try {
+    const customer = await Customer.findOne({ phone: req.params.phone });
+    if (!customer) return res.status(404).json({ message: "Customer not found" });
+    const history = await Delivery.find({ customerPhone: req.params.phone }).sort({ createdAt: -1 });
+    res.json({ customer, history });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to fetch customer details" });
+  }
+});
+
+app.get('/api/get-customer-details/:phone', auth(['admin', 'manager']), async (req, res) => {
+  try {
+    const customer = await Customer.findOne({ phone: req.params.phone });
+    if (!customer) return res.status(404).json({ message: "New customer" });
+    res.json(customer);
+  } catch (err) {
+    res.status(500).json({ message: "Error fetching details" });
+  }
 });
 
 app.post('/admin/dispatch-bulk', auth(['admin']), async (req, res) => {
