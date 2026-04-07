@@ -392,6 +392,33 @@ app.get('/api/get-customer-details/:phone', auth(['admin', 'manager']), async (r
   }
 });
 
+// Temporary Migration Endpoint
+app.post('/admin/migrate-customers', auth(['admin']), async (req, res) => {
+  try {
+    const deliveries = await Delivery.find().sort({ createdAt: 1 });
+    let count = 0;
+    for (const d of deliveries) {
+      if (d.customerPhone && d.customerName && d.customerAddress) {
+        await Customer.findOneAndUpdate(
+          { phone: d.customerPhone },
+          {
+            name: d.customerName,
+            address: d.customerAddress,
+            lastOrderAt: d.createdAt
+          },
+          { upsert: true }
+        );
+        count++;
+      }
+    }
+    await createLog(req.user, 'Data Migration', `Migrated ${count} delivery records to Customers collection`);
+    res.json({ success: true, message: `Successfully processed ${count} records.` });
+  } catch (err) {
+    console.error("Migration error:", err);
+    res.status(500).json({ message: "Migration failed", error: err.message });
+  }
+});
+
 app.post('/admin/dispatch-bulk', auth(['admin']), async (req, res) => {
   const deliveries = await Delivery.find({ trackingId: { $in: req.body.trackingIds } }, '_id');
   await Delivery.updateMany({ trackingId: { $in: req.body.trackingIds } }, { $push: { statusUpdates: { status: 'Dispatched from Head Office' } } });
